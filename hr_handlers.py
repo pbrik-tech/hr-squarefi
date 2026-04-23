@@ -35,6 +35,10 @@ class Flow(StatesGroup):
     collecting = State()
 
 
+class AskSalary(StatesGroup):
+    waiting = State()
+
+
 def is_hr(tg_id: int) -> bool:
     return tg_id == cfg.hr_id
 
@@ -481,6 +485,12 @@ async def flow_input(message: Message, state: FSMContext):
     # Отмечаем в HR-чек-листе
     db.set_check(token, "hr", field, True)
 
+    # Если это email — пытаемся вытащить email-адрес и записать в Notion
+    if field == "email" and emp.get("notion_page_id"):
+        found = notion_sync.extract_email(body)
+        if found:
+            await notion_sync.set_email(emp["notion_page_id"], found)
+
     await message.answer(
         f"✅ Отправлено сотруднику <b>{esc(emp['name'])}</b>: {spec['ask']}"
     )
@@ -491,12 +501,14 @@ async def flow_input(message: Message, state: FSMContext):
             await ask_hr_for(token, nxt, state, chain=True)
         else:
             db.set_step(token, "flow_done")
-            await state.clear()
+            # Переходим к запросу зарплаты
+            await state.set_state(AskSalary.waiting)
+            await state.update_data(token=token)
             await message.answer(
-                f"🎉 Все материалы отправлены <b>{esc(emp['name'])}</b>.\n"
-                f"Теперь подожди, пока сотрудник пройдёт свой чек-лист. "
-                f"Не забудь остальные пункты дорожной карты.",
-                reply_markup=main_kb(),
+                f"🎉 Все материалы отправлены <b>{esc(emp['name'])}</b>.\n\n"
+                f"Последний шаг — пришли <b>зарплату</b> сотрудника "
+                f"(например: <code>3000 USDT/мес</code>). "
+                f"Запишу в колонку Salary в Notion. /cancel — пропустить."
             )
     else:
         # Одиночная отправка — возвращаем HR на карточку сотрудника
@@ -506,6 +518,42 @@ async def flow_input(message: Message, state: FSMContext):
             render_emp_card(emp_fresh),
             reply_markup=emp_card_kb(token, emp_fresh),
         )
+
+
+FINAL_CHECKLIST = (
+    "📝 <b>Осталось сделать вручную:</b>\n\n"
+    "☐ Добавить в Notion (доступ)\n"
+    "☐ Добавить в Slack\n"
+    "☐ Добавить в CRM\n"
+    "☐ Внести данные в таблицу команды\n"
+    "☐ Сохранить ДР в Google Calendar\n\n"
+    "Отметь галочки в дорожной карте на карточке сотрудника, когда выполнишь."
+)
+
+
+@router.message(AskSalary.waiting)
+async def salary_input(message: Message, state: FSMContext):
+    if not is_hr(message.from_user.id):
+        return
+    data = await state.get_data()
+    token = data["token"]
+    emp = db.get_by_token(token)
+    if not emp:
+        await state.clear()
+        return
+    salary = (message.text or "").strip()
+    if salary and emp.get("notion_page_id"):
+        await notion_sync.set_salary(emp["notion_page_id"], salary)
+        await message.answer(
+            f"✅ Зарплата сохранена в Notion: <code>{esc(salary)}</code>"
+        )
+    await state.clear()
+    # Финальный чек-лист напоминаний + карточка
+    await message.answer(FINAL_CHECKLIST)
+    emp_fresh = db.get_by_token(token)
+    await message.answer(
+        render_emp_card(emp_fresh), reply_markup=emp_card_kb(token, emp_fresh)
+    )
 
 
 # ---------- Fallback ----------

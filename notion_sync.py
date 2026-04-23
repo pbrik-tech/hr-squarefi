@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import Optional
 
 import aiohttp
@@ -33,6 +34,16 @@ HR_NOTION_MAP = {
 WALLET_COLUMN = "SquareFi Wallet (USDT TRC20)"
 TG_ID_COLUMN = "Telegram ID"
 TITLE_COLUMN = "Employee / Candidate"
+STATUS_COLUMN = "Status"
+EMAIL_COLUMN = "Email address"
+SALARY_COLUMN = "Salary"
+
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w.-]+)+")
+
+
+def extract_email(text: str) -> Optional[str]:
+    m = EMAIL_RE.search(text or "")
+    return m.group(0) if m else None
 
 
 def _enabled() -> bool:
@@ -65,7 +76,7 @@ async def _request(method: str, path: str, payload: Optional[dict] = None) -> Op
 
 
 async def create_employee_row(name: str) -> Optional[str]:
-    """Создаёт строку в таблице с заголовком = name. Возвращает page_id."""
+    """Создаёт строку в таблице: title=name, Status=[new]. Возвращает page_id."""
     if not _enabled():
         return None
     payload = {
@@ -73,11 +84,34 @@ async def create_employee_row(name: str) -> Optional[str]:
         "properties": {
             TITLE_COLUMN: {
                 "title": [{"text": {"content": name}}]
-            }
+            },
+            STATUS_COLUMN: {
+                "multi_select": [{"name": "new"}]
+            },
         },
     }
     data = await _request("POST", "/pages", payload)
     return data["id"] if data else None
+
+
+async def set_email(page_id: str, email: str):
+    payload = {
+        "properties": {
+            EMAIL_COLUMN: {"email": email}
+        }
+    }
+    await _request("PATCH", f"/pages/{page_id}", payload)
+
+
+async def set_salary(page_id: str, salary: str):
+    payload = {
+        "properties": {
+            SALARY_COLUMN: {
+                "rich_text": [{"text": {"content": salary}}]
+            }
+        }
+    }
+    await _request("PATCH", f"/pages/{page_id}", payload)
 
 
 async def set_telegram_id(page_id: str, telegram_id: int):
