@@ -13,6 +13,7 @@ from aiogram.types import (
 )
 
 import db
+import notion_sync
 from config import cfg, runtime
 from texts import (
     EMP_CHECKLIST,
@@ -349,9 +350,14 @@ async def new_name(message: Message, state: FSMContext):
         return
     token = db.create_employee(name)
     await state.clear()
+    # Создаём строку в Notion и сохраняем page_id
+    page_id = await notion_sync.create_employee_row(name)
+    if page_id:
+        db.set_notion_page_id(token, page_id)
     link = f"https://t.me/{cfg.emp_bot_username}?start={token}"
+    notion_note = " · строка в Notion создана" if page_id else " · ⚠️ Notion sync не сработал"
     await message.answer(
-        f"✅ Создан: <b>{esc(name)}</b>\n\n"
+        f"✅ Создан: <b>{esc(name)}</b>{notion_note}\n\n"
         f"Отправь сотруднику эту ссылку (через неё он подключится к "
         f"@{cfg.emp_bot_username}):\n<code>{esc(link)}</code>",
         reply_markup=main_kb(),
@@ -376,8 +382,10 @@ async def cb_toggle(cb: CallbackQuery):
     if not is_hr(cb.from_user.id):
         return
     _, _, token, key = cb.data.split(":", 3)
-    db.toggle_check(token, "hr", key)
+    data = db.toggle_check(token, "hr", key)
     emp = db.get_by_token(token)
+    # Синк в Notion
+    await notion_sync.sync_hr_check(emp.get("notion_page_id"), key, bool(data.get(key)))
     await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
     await cb.answer("Готово")
 

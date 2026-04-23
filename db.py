@@ -20,7 +20,8 @@ def init_db():
                 hr_checklist TEXT NOT NULL DEFAULT '{}',
                 emp_checklist TEXT NOT NULL DEFAULT '{}',
                 tron_wallet TEXT,
-                flow_step TEXT DEFAULT 'new'
+                flow_step TEXT DEFAULT 'new',
+                notion_page_id TEXT
             );
             """
         )
@@ -28,6 +29,8 @@ def init_db():
         cols = [r[1] for r in c.execute("PRAGMA table_info(employees);").fetchall()]
         if "flow_step" not in cols:
             c.execute("ALTER TABLE employees ADD COLUMN flow_step TEXT DEFAULT 'new';")
+        if "notion_page_id" not in cols:
+            c.execute("ALTER TABLE employees ADD COLUMN notion_page_id TEXT;")
 
 
 @contextmanager
@@ -130,3 +133,10 @@ def set_wallet(token: str, wallet: str):
 def set_step(token: str, step: str):
     with _conn() as c:
         c.execute("UPDATE employees SET flow_step = ? WHERE token = ?", (step, token))
+
+
+def set_notion_page_id(token: str, page_id: str):
+    with _conn() as c:
+        c.execute(
+            "UPDATE employees SET notion_page_id = ? WHERE token = ?", (page_id, token)
+        )

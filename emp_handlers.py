@@ -12,6 +12,7 @@ from aiogram.types import (
 )
 
 import db
+import notion_sync
 from config import cfg, runtime
 from texts import EMP_CHECKLIST, EMP_KEYS
 
@@ -73,6 +74,12 @@ async def start_deep(message: Message, command):
     fresh_join = not emp["telegram_id"]
     if fresh_join:
         db.link_employee(token, message.from_user.id)
+        # Пишем Telegram ID в Notion
+        emp_after = db.get_by_token(token)
+        if emp_after.get("notion_page_id"):
+            await notion_sync.set_telegram_id(
+                emp_after["notion_page_id"], message.from_user.id
+            )
 
     # Сразу запускаем авто-flow: интро + чек-лист + отбивка HR + запрос материалов
     if fresh_join:
@@ -133,6 +140,8 @@ async def cb_toggle(cb: CallbackQuery):
     status = "✅ отметил" if data.get(key) else "⬜ снял отметку"
     await cb.message.edit_reply_markup(reply_markup=emp_checklist_kb(emp["token"]))
     await cb.answer("Сохранено")
+    # Синк в Notion
+    await notion_sync.sync_emp_check(emp.get("notion_page_id"), key, bool(data.get(key)))
     await runtime.hr_bot.send_message(
         cfg.hr_id,
         f"📬 <b>{esc(emp['name'])}</b> {status}: <i>{esc(label)}</i>",
@@ -160,6 +169,9 @@ async def wallet_input(message: Message, state: FSMContext):
     db.set_wallet(emp["token"], wallet)
     await state.clear()
     await message.answer("✅ Спасибо! Адрес сохранён и передан HR.")
+    # Синк в Notion: адрес кошелька
+    if emp.get("notion_page_id"):
+        await notion_sync.set_wallet(emp["notion_page_id"], wallet)
     await runtime.hr_bot.send_message(
         cfg.hr_id,
         f"💳 <b>{esc(emp['name'])}</b> прислал адрес кошелька:\n<code>{esc(wallet)}</code>",
