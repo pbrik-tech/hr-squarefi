@@ -56,6 +56,12 @@ def create_employee(name: str) -> str:
 
 def link_employee(token: str, telegram_id: int) -> bool:
     with _conn() as c:
+        # Освобождаем этот telegram_id у других записей (на случай тестирования с одного аккаунта)
+        c.execute(
+            "UPDATE employees SET telegram_id = NULL "
+            "WHERE telegram_id = ? AND token != ?",
+            (telegram_id, token),
+        )
         cur = c.execute(
             "UPDATE employees SET telegram_id = ?, flow_step = 'joined' "
             "WHERE token = ? AND telegram_id IS NULL",

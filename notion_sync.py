@@ -76,7 +76,7 @@ async def _request(method: str, path: str, payload: Optional[dict] = None) -> Op
 
 
 async def create_employee_row(name: str) -> Optional[str]:
-    """Создаёт строку в таблице: title=name, Status=[new]. Возвращает page_id."""
+    """Создаёт строку в таблице: title=name, Status=Onboarding. Возвращает page_id."""
     if not _enabled():
         return None
     payload = {
@@ -86,7 +86,7 @@ async def create_employee_row(name: str) -> Optional[str]:
                 "title": [{"text": {"content": name}}]
             },
             STATUS_COLUMN: {
-                "multi_select": [{"name": "new"}]
+                "status": {"name": "Onboarding"}
             },
         },
     }
