@@ -85,6 +85,7 @@ def list_kb(employees: list) -> InlineKeyboardMarkup:
 
 def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
     hr_checks = db.get_checks(token, "hr")
+    linked = bool(emp.get("telegram_id"))
     rows = []
     # Чек-лист дорожной карты HR (13 пунктов)
     for key, label in HR_ROADMAP:
@@ -93,14 +94,40 @@ def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(text=f"{mark} {short}", callback_data=f"hr:t:{token}:{key}")]
         )
-    # Продолжить/перезапустить flow
-    if emp["flow_step"] not in (None, "flow_done") and emp["telegram_id"]:
+
+    # Кнопки повторной отправки интро и чек-листа (уже отправлялись автоматически)
+    if linked:
         rows.append([
-            InlineKeyboardButton(
-                text="▶️ Продолжить передачу материалов",
-                callback_data=f"hr:flow:{token}",
-            )
+            InlineKeyboardButton(text="📩 Повторить интро", callback_data=f"hr:resend:{token}:intro"),
+            InlineKeyboardButton(text="📋 Повторить чек-лист", callback_data=f"hr:resend:{token}:checklist"),
         ])
+
+        # Ручная отправка материалов (каждая — запрос одного поля у HR)
+        rows.append([
+            InlineKeyboardButton(text="🔗 Отправить верификацию", callback_data=f"hr:send:{token}:verify"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="✉️ Отправить доступ к почте", callback_data=f"hr:send:{token}:email"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="📱 Отправить номер телефона", callback_data=f"hr:send:{token}:phone"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="📝 Отправить NDA", callback_data=f"hr:send:{token}:nda"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="💳 Отправить инвайт в кошелёк", callback_data=f"hr:send:{token}:wallet"),
+        ])
+
+        # Авто-цепочка: продолжить последовательную передачу, если ещё не завершена
+        if emp["flow_step"] not in (None, "flow_done"):
+            rows.append([
+                InlineKeyboardButton(
+                    text="▶️ Продолжить авто-цепочку",
+                    callback_data=f"hr:flow:{token}",
+                )
+            ])
+
     rows.append([
         InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hr:emp:{token}"),
         InlineKeyboardButton(text="⬅️ К списку", callback_data="hr:list"),
@@ -151,20 +178,29 @@ def render_emp_card(emp: dict) -> str:
     )
 
 
-async def ask_hr_for(token: str, field: str, state: FSMContext):
-    """Запросить у HR значение для поля flow и выставить FSM."""
+async def ask_hr_for(token: str, field: str, state: FSMContext, chain: bool = True):
+    """Запросить у HR значение для поля flow и выставить FSM.
+
+    chain=True  — после отправки бот попросит следующее поле (авто-цепочка).
+    chain=False — одиночная отправка: после успеха возврат в меню.
+    """
     emp = db.get_by_token(token)
     if not emp:
         return
     spec = FLOW_BY_FIELD[field]
-    db.set_step(token, field)
+    if chain:
+        db.set_step(token, field)
     await state.set_state(Flow.collecting)
-    await state.update_data(token=token, field=field)
+    await state.update_data(token=token, field=field, chain=chain)
+    hint = (
+        "Команды: /skip — пропустить, /cancel — выйти."
+        if chain
+        else "Команда: /cancel — отменить."
+    )
     await runtime.hr_bot.send_message(
         cfg.hr_id,
         f"⏳ Для сотрудника <b>{esc(emp['name'])}</b> пришли {spec['ask']}.\n\n"
-        f"Отправь ссылку/текст одним сообщением. "
-        f"Команды: /skip — пропустить шаг, /cancel — выйти из ввода.",
+        f"Отправь ссылку/текст одним сообщением. {hint}",
     )
 
 
@@ -358,8 +394,54 @@ async def cb_flow(cb: CallbackQuery, state: FSMContext):
     field = emp["flow_step"]
     if field in (None, "new", "joined", "flow_done"):
         field = FLOW_ORDER[0]
-    await ask_hr_for(token, field, state)
+    await ask_hr_for(token, field, state, chain=True)
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("hr:send:"))
+async def cb_send_single(cb: CallbackQuery, state: FSMContext):
+    if not is_hr(cb.from_user.id):
+        return
+    _, _, token, field = cb.data.split(":", 3)
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await cb.answer("Сотрудник ещё не присоединился", show_alert=True)
+        return
+    if field not in FLOW_BY_FIELD:
+        await cb.answer("Неизвестное поле", show_alert=True)
+        return
+    await ask_hr_for(token, field, state, chain=False)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("hr:resend:"))
+async def cb_resend(cb: CallbackQuery):
+    """Повторная отправка интро или чек-листа (без запроса HR — просто шлём заново)."""
+    if not is_hr(cb.from_user.id):
+        return
+    _, _, token, kind = cb.data.split(":", 3)
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await cb.answer("Сотрудник ещё не присоединился", show_alert=True)
+        return
+    from texts import INTRO_MESSAGE, CHECKLIST_INTRO
+    from emp_handlers import emp_checklist_kb
+
+    if kind == "intro":
+        await runtime.emp_bot.send_message(emp["telegram_id"], INTRO_MESSAGE)
+        db.set_check(token, "hr", "intro", True)
+        await cb.answer("Интро отправлено повторно")
+    elif kind == "checklist":
+        await runtime.emp_bot.send_message(
+            emp["telegram_id"], CHECKLIST_INTRO, reply_markup=emp_checklist_kb(token)
+        )
+        db.set_check(token, "hr", "checklist", True)
+        await cb.answer("Чек-лист отправлен повторно")
+    else:
+        await cb.answer("Неизвестный тип", show_alert=True)
+        return
+    emp = db.get_by_token(token)
+    await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
 
 
 # ---------- Flow text input ----------
@@ -372,6 +454,7 @@ async def flow_input(message: Message, state: FSMContext):
     data = await state.get_data()
     token = data["token"]
     field = data["field"]
+    chain = data.get("chain", True)
     emp = db.get_by_token(token)
     if not emp or not emp["telegram_id"]:
         await state.clear()
@@ -394,17 +477,26 @@ async def flow_input(message: Message, state: FSMContext):
         f"✅ Отправлено сотруднику <b>{esc(emp['name'])}</b>: {spec['ask']}"
     )
 
-    nxt = next_field(field)
-    if nxt:
-        await ask_hr_for(token, nxt, state)
+    if chain:
+        nxt = next_field(field)
+        if nxt:
+            await ask_hr_for(token, nxt, state, chain=True)
+        else:
+            db.set_step(token, "flow_done")
+            await state.clear()
+            await message.answer(
+                f"🎉 Все материалы отправлены <b>{esc(emp['name'])}</b>.\n"
+                f"Теперь подожди, пока сотрудник пройдёт свой чек-лист. "
+                f"Не забудь остальные пункты дорожной карты.",
+                reply_markup=main_kb(),
+            )
     else:
-        db.set_step(token, "flow_done")
+        # Одиночная отправка — возвращаем HR на карточку сотрудника
         await state.clear()
+        emp_fresh = db.get_by_token(token)
         await message.answer(
-            f"🎉 Все материалы отправлены <b>{esc(emp['name'])}</b>.\n"
-            f"Теперь подожди, пока сотрудник пройдёт свой чек-лист. "
-            f"Не забудь остальные пункты дорожной карты.",
-            reply_markup=main_kb(),
+            render_emp_card(emp_fresh),
+            reply_markup=emp_card_kb(token, emp_fresh),
         )
 
 
