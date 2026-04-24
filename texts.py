@@ -83,8 +83,40 @@ FLOW = [
     },
 ]
 
-FLOW_BY_FIELD = {s["field"]: s for s in FLOW}
-FLOW_ORDER = [s["field"] for s in FLOW]
+ACCESS_FLOW = [
+    {
+        "field": "slack_access",
+        "ask": "<b>инвайт-ссылку в Slack</b>",
+        "header": "💬 <b>Доступ в Slack</b>",
+        "extra": "Пожалуйста, присоединись по ссылке и осмотрись.",
+        "emp_check": None,
+    },
+    {
+        "field": "crm_access",
+        "ask": "<b>доступ в CRM</b> (инвайт-ссылка или креды)",
+        "header": "🗂 <b>Доступ в CRM</b>",
+        "extra": "Войди и настрой свой профиль.",
+        "emp_check": None,
+    },
+    {
+        "field": "notion_access",
+        "ask": "<b>инвайт в Notion workspace</b>",
+        "header": "📝 <b>Доступ в Notion</b>",
+        "extra": "Прими инвайт и осмотрись — там вся внутренняя документация.",
+        "emp_check": None,
+    },
+    {
+        "field": "admin_access",
+        "ask": "<b>доступ в Админ-панель</b> (инвайт или креды)",
+        "header": "⚙️ <b>Доступ в Админ-панель</b>",
+        "extra": None,
+        "emp_check": None,
+    },
+]
+
+FLOW_BY_FIELD = {s["field"]: s for s in FLOW + ACCESS_FLOW}
+FLOW_ORDER = [s["field"] for s in FLOW]  # авто-цепочка только по материалам
+ACCESS_KEYS = [s["field"] for s in ACCESS_FLOW]
 
 INTRO_MESSAGE = (
     "Привет! Меня зовут <b>Полина</b>, squarefi.co / mosta.io — рада знакомству!\n\n"

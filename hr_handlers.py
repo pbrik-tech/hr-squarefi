@@ -147,6 +147,14 @@ def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="💳 Отправить инвайт в кошелёк", callback_data=f"hr:send:{token}:wallet"),
         ])
+        rows.append([
+            InlineKeyboardButton(text="💬 Отправить Slack", callback_data=f"hr:send:{token}:slack_access"),
+            InlineKeyboardButton(text="🗂 Отправить CRM", callback_data=f"hr:send:{token}:crm_access"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="📝 Отправить Notion", callback_data=f"hr:send:{token}:notion_access"),
+            InlineKeyboardButton(text="⚙️ Отправить Админку", callback_data=f"hr:send:{token}:admin_access"),
+        ])
 
         # Авто-цепочка: продолжить последовательную передачу, если ещё не завершена
         if emp["flow_step"] not in (None, "flow_done"):
@@ -723,6 +731,9 @@ async def flow_input(message: Message, state: FSMContext):
 
     # Отмечаем в HR-чек-листе
     db.set_check(token, "hr", field, True)
+
+    # Синкаем соответствующий HR-чекбокс в Notion (для slack/crm/notion/admin)
+    await notion_sync.sync_hr_check(emp.get("notion_page_id"), field, True)
 
     # Если это email — пытаемся вытащить email-адрес и записать в Notion
     if field == "email" and emp.get("notion_page_id"):
