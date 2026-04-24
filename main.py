@@ -4,12 +4,12 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.memory import MemoryStorage
 
 import db
 import emp_handlers
 import hr_handlers
 from config import cfg, runtime
+from storage import SQLiteStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,8 +28,8 @@ async def main():
     runtime.hr_bot = hr_bot
     runtime.emp_bot = emp_bot
 
-    hr_dp = Dispatcher(storage=MemoryStorage())
-    emp_dp = Dispatcher(storage=MemoryStorage())
+    hr_dp = Dispatcher(storage=SQLiteStorage())
+    emp_dp = Dispatcher(storage=SQLiteStorage())
     hr_dp.include_router(hr_handlers.router)
     emp_dp.include_router(emp_handlers.router)
 
