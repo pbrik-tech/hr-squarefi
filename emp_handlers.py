@@ -14,7 +14,15 @@ from aiogram.types import (
 import db
 import notion_sync
 from config import cfg, runtime
-from texts import EMP_CHECKLIST, EMP_KEYS
+from texts import (
+    EMP_CHECKLIST,
+    EMP_KEYS,
+    EMP_NOT_LINKED_HINT,
+    EMP_WELCOME_AFTER_LINK,
+    PENDING_APPROVAL_TEXT as _PENDING,
+    REJECT_TEXT as _REJECT,
+    SELF_REGISTER_PROMPT as _SELF_REG,
+)
 
 router = Router(name="emp")
 
@@ -27,22 +35,10 @@ class SelfRegister(StatesGroup):
     awaiting_name = State()
 
 
-SELF_REGISTER_PROMPT = (
-    "Привет!\n\n"
-    "Это HR-бот SquareFi.\n\n"
-    "Напиши, пожалуйста, твою фамилию и имя на английском, чтобы начать онбординг."
-)
-
-PENDING_APPROVAL_TEXT = (
-    "✅ Я передала твой запрос HR. Жду, пока подтвердят — "
-    "как только это произойдёт, я сразу пришлю следующий шаг. "
-    "Обычно это занимает до пары часов."
-)
-
-REJECT_TEXT = (
-    "К сожалению, твой запрос на онбординг не подтверждён. "
-    "Если это ошибка — свяжись с HR напрямую."
-)
+# Реэкспорт для обратной совместимости (hr_handlers импортирует REJECT_TEXT отсюда)
+SELF_REGISTER_PROMPT = _SELF_REG
+PENDING_APPROVAL_TEXT = _PENDING
+REJECT_TEXT = _REJECT
 
 
 def esc(s) -> str:

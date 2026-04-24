@@ -20,10 +20,17 @@ from texts import (
     EMP_KEYS,
     FLOW_BY_FIELD,
     FLOW_ORDER,
+    HR_DASHBOARD_INACCESSIBLE,
+    HR_FINAL_REMINDER,
+    HR_GREETING,
+    HR_JOIN_NOTIFICATION,
     HR_KEYS,
+    HR_NEW_SELF_REGISTER_REQUEST,
     HR_ROADMAP,
+    HR_SALARY_SAVED,
     OFFER_NOTION_URL,
     OFFER_TEMPLATE,
+    SLACK_PRESENTATION_DRAFT,
 )
 
 router = Router(name="hr")
@@ -770,17 +777,6 @@ async def flow_input(message: Message, state: FSMContext):
         )
 
 
-FINAL_CHECKLIST = (
-    "📝 <b>Осталось сделать вручную:</b>\n\n"
-    "☐ Добавить в Notion (доступ)\n"
-    "☐ Добавить в Slack\n"
-    "☐ Добавить в CRM\n"
-    "☐ Внести данные в таблицу команды\n"
-    "☐ Сохранить ДР в Google Calendar\n\n"
-    "Отметь галочки в дорожной карте на карточке сотрудника, когда выполнишь."
-)
-
-
 @router.message(AskSalary.waiting)
 async def salary_input(message: Message, state: FSMContext):
     if not is_hr(message.from_user.id):
@@ -794,12 +790,10 @@ async def salary_input(message: Message, state: FSMContext):
     salary = (message.text or "").strip()
     if salary and emp.get("notion_page_id"):
         await notion_sync.set_salary(emp["notion_page_id"], salary)
-        await message.answer(
-            f"✅ Зарплата сохранена в Notion: <code>{esc(salary)}</code>"
-        )
+        await message.answer(HR_SALARY_SAVED.format(salary=esc(salary)))
     await state.clear()
     # Финальный чек-лист напоминаний + карточка
-    await message.answer(FINAL_CHECKLIST)
+    await message.answer(HR_FINAL_REMINDER)
     emp_fresh = db.get_by_token(token)
     await message.answer(
         render_emp_card(emp_fresh), reply_markup=emp_card_kb(token, emp_fresh)
