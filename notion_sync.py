@@ -18,9 +18,9 @@ EMP_NOTION_MAP = {
     "verification": "Personа",
     "nda": "NDA",
     "contract": "Agreement",
-    "email": "Email",
+    "gmail_access": "Email",  # галочка Email в Notion ставится когда доступ к почте выдан
     "wallet": "Wallet",
-    # "phone" — в Notion колонки нет
+    # "email_2fa" и "phone" — колонок нет
 }
 
 HR_NOTION_MAP = {

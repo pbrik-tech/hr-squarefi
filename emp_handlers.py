@@ -56,15 +56,18 @@ def progress_bar(done: int, total: int) -> str:
 
 def emp_checklist_kb(token: str) -> InlineKeyboardMarkup:
     checks = db.get_checks(token, "emp")
+    emp = db.get_by_token(token)
     rows = []
     for key, label in EMP_CHECKLIST:
         mark = "✅" if checks.get(key) else "⬜"
         rows.append(
             [InlineKeyboardButton(text=f"{mark} {label}", callback_data=f"emp:t:{key}")]
         )
-    rows.append(
-        [InlineKeyboardButton(text="💳 Отправить адрес кошелька", callback_data="emp:wallet")]
-    )
+    # Кнопка «Отправить адрес кошелька» показывается только если адрес ещё не прислан
+    if not (emp and emp.get("tron_wallet")):
+        rows.append(
+            [InlineKeyboardButton(text="💳 Отправить адрес кошелька", callback_data="emp:wallet")]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
