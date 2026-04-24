@@ -3,7 +3,7 @@ import os
 import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DB_PATH = os.environ.get("DB_PATH", "bot.db")
 
@@ -21,8 +21,28 @@ def init_db():
                 emp_checklist TEXT NOT NULL DEFAULT '{}',
                 tron_wallet TEXT,
                 flow_step TEXT DEFAULT 'new',
-                notion_page_id TEXT
+                notion_page_id TEXT,
+                last_action_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT,
+                actor TEXT NOT NULL,
+                event TEXT NOT NULL,
+                payload TEXT,
+                ts TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_token ON audit_log(token);
+            CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+
+            CREATE TABLE IF NOT EXISTS messages_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT,
+                direction TEXT NOT NULL,
+                text TEXT,
+                ts TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_msg_token ON messages_log(token);
             """
         )
         # idempotent column add
@@ -31,6 +51,8 @@ def init_db():
             c.execute("ALTER TABLE employees ADD COLUMN flow_step TEXT DEFAULT 'new';")
         if "notion_page_id" not in cols:
             c.execute("ALTER TABLE employees ADD COLUMN notion_page_id TEXT;")
+        if "last_action_at" not in cols:
+            c.execute("ALTER TABLE employees ADD COLUMN last_action_at TEXT;")
 
 
 @contextmanager
@@ -168,3 +190,66 @@ def set_notion_page_id(token: str, page_id: str):
         c.execute(
             "UPDATE employees SET notion_page_id = ? WHERE token = ?", (page_id, token)
         )
+
+
+# ---- Audit log & messages log ----
+
+def audit(token: str, actor: str, event: str, payload: dict = None):
+    """Запись в журнал действий. Также обновляет last_action_at у сотрудника."""
+    ts = datetime.utcnow().isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO audit_log (token, actor, event, payload, ts) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (token, actor, event, json.dumps(payload, ensure_ascii=False) if payload else None, ts),
+        )
+        if token:
+            c.execute(
+                "UPDATE employees SET last_action_at = ? WHERE token = ?", (ts, token)
+            )
+
+
+def log_msg(token: str, direction: str, text: str):
+    """Журнал сообщений. direction: bot_to_emp / emp_to_bot / bot_to_hr / hr_to_bot"""
+    if not text:
+        return
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO messages_log (token, direction, text, ts) "
+            "VALUES (?, ?, ?, ?)",
+            (token, direction, text[:4000], datetime.utcnow().isoformat()),
+        )
+
+
+def get_audit_log(token: str, limit: int = 30):
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT event, actor, payload, ts FROM audit_log "
+            "WHERE token = ? ORDER BY id DESC LIMIT ?",
+            (token, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_messages_log(token: str, limit: int = 30):
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT direction, text, ts FROM messages_log "
+            "WHERE token = ? ORDER BY id DESC LIMIT ?",
+            (token, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_stale_employees(days: int = 3):
+    """Сотрудники без движения > days дней, ещё не завершившие онбординг."""
+    threshold = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM employees "
+            "WHERE flow_step != 'flow_done' "
+            "AND (last_action_at IS NULL OR last_action_at < ?) "
+            "ORDER BY COALESCE(last_action_at, created_at)",
+            (threshold,),
+        ).fetchall()
+    return [dict(r) for r in rows]

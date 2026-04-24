@@ -95,6 +95,7 @@ async def start_deep(message: Message, command):
     fresh_join = not emp["telegram_id"]
     if fresh_join:
         db.link_employee(token, message.from_user.id)
+        db.audit(token, "employee", "joined_via_invite", {"tg_id": message.from_user.id})
         # Пишем Telegram ID в Notion
         emp_after = db.get_by_token(token)
         if emp_after.get("notion_page_id"):
@@ -151,6 +152,9 @@ async def self_register_name(message: Message, state: FSMContext):
         return
 
     token = db.create_employee_self(name, message.from_user.id)
+    db.audit(token, "employee", "self_registered", {
+        "name": name, "tg_id": message.from_user.id
+    })
     await state.clear()
     username = (
         f"@{message.from_user.username}" if message.from_user.username else "—"
@@ -202,6 +206,9 @@ async def cb_toggle(cb: CallbackQuery):
     data = db.toggle_check(emp["token"], "emp", key)
     label = dict(EMP_CHECKLIST)[key]
     status = "✅ отметил" if data.get(key) else "⬜ снял отметку"
+    db.audit(emp["token"], "employee", "toggle", {
+        "field": key, "value": bool(data.get(key))
+    })
     await cb.message.edit_reply_markup(reply_markup=emp_checklist_kb(emp["token"]))
     await cb.answer("Сохранено")
     # Синк в Notion
@@ -231,6 +238,8 @@ async def wallet_input(message: Message, state: FSMContext):
         return
     wallet = message.text.strip()
     db.set_wallet(emp["token"], wallet)
+    db.audit(emp["token"], "employee", "wallet_submitted", {"wallet": wallet})
+    db.log_msg(emp["token"], "emp_to_bot", f"[wallet] {wallet}")
     await state.clear()
     await message.answer("✅ Спасибо! Адрес сохранён и передан HR.")
     # Синк в Notion: адрес кошелька

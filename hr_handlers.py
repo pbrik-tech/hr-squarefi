@@ -97,6 +97,33 @@ def main_kb() -> InlineKeyboardMarkup:
     )
 
 
+def _days_since(iso_ts: str) -> Optional[int]:
+    if not iso_ts:
+        return None
+    try:
+        from datetime import datetime
+        delta = datetime.utcnow() - datetime.fromisoformat(iso_ts)
+        return delta.days
+    except Exception:
+        return None
+
+
+def _activity_tag(e: dict) -> str:
+    last = e.get("last_action_at") or e.get("created_at")
+    days = _days_since(last)
+    if days is None:
+        return ""
+    if days == 0:
+        return "· сегодня"
+    if days == 1:
+        return "· вчера"
+    if days < 7:
+        return f"· {days}д назад"
+    if days < 30:
+        return f"· {days}д ⚠️"
+    return f"· {days}д ⚠️"
+
+
 def list_kb(employees: list) -> InlineKeyboardMarkup:
     rows = []
     for e in employees:
@@ -105,9 +132,12 @@ def list_kb(employees: list) -> InlineKeyboardMarkup:
         hr_done = sum(1 for k in HR_KEYS if hr_checks.get(k))
         emp_done = sum(1 for k in EMP_KEYS if emp_checks.get(k))
         status = "🟢" if e["telegram_id"] else "⚪"
+        if e.get("flow_step") == "flow_done":
+            status = "✅"
+        age = _activity_tag(e)
         label = (
             f"{status} {e['name']} — HR {hr_done}/{len(HR_KEYS)} · "
-            f"Сотр. {emp_done}/{len(EMP_KEYS)}"
+            f"Сотр. {emp_done}/{len(EMP_KEYS)} {age}"
         )
         rows.append(
             [InlineKeyboardButton(text=label, callback_data=f"hr:emp:{e['token']}")]
@@ -172,6 +202,10 @@ def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
                 )
             ])
 
+    rows.append([
+        InlineKeyboardButton(text="📋 Черновик для #all-squarefi", callback_data=f"hr:slackdraft:{token}"),
+        InlineKeyboardButton(text="📜 Журнал действий", callback_data=f"hr:log:{token}"),
+    ])
     rows.append([
         InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hr:emp:{token}"),
         InlineKeyboardButton(text="⬅️ К списку", callback_data="hr:list"),
@@ -263,12 +297,16 @@ async def kickoff_flow_from_emp_side(token: str):
     from emp_handlers import emp_checklist_kb
 
     await runtime.emp_bot.send_message(emp["telegram_id"], INTRO_MESSAGE)
+    db.log_msg(token, "bot_to_emp", INTRO_MESSAGE)
+    db.audit(token, "bot", "intro_sent")
     db.set_check(token, "hr", "intro", True)
 
     # 2. Чек-лист (отправляется в emp-бот)
     await runtime.emp_bot.send_message(
         emp["telegram_id"], CHECKLIST_INTRO, reply_markup=emp_checklist_kb(token)
     )
+    db.log_msg(token, "bot_to_emp", CHECKLIST_INTRO)
+    db.audit(token, "bot", "checklist_sent")
     db.set_check(token, "hr", "checklist", True)
 
     # 3. HR-отбивка
@@ -314,6 +352,31 @@ async def menu(message: Message, state: FSMContext):
     if is_hr(message.from_user.id):
         await state.clear()
         await message.answer("Меню HR:", reply_markup=main_kb())
+
+
+@router.message(Command("stale"))
+async def stale(message: Message):
+    if not is_hr(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    days = 3
+    if len(parts) > 1 and parts[1].isdigit():
+        days = int(parts[1])
+    employees = db.get_stale_employees(days=days)
+    if not employees:
+        await message.answer(
+            f"✅ Нет онбордингов без движения более {days} дней."
+        )
+        return
+    lines = [f"⚠️ <b>Зависшие онбординги (без движения > {days} дней):</b>\n"]
+    for e in employees:
+        last = e.get("last_action_at") or e.get("created_at")
+        days_ago = _days_since(last) or 0
+        lines.append(
+            f"• <b>{esc(e['name'])}</b> — последнее движение {days_ago}д назад "
+            f"(шаг: <code>{esc(e.get('flow_step') or '—')}</code>)"
+        )
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("cancel"))
@@ -392,6 +455,7 @@ async def new_name(message: Message, state: FSMContext):
         await message.answer("Имя не может быть пустым. Попробуй ещё раз.")
         return
     token = db.create_employee(name)
+    db.audit(token, "hr", "created_invite", {"name": name})
     await state.clear()
     # Создаём строку в Notion и сохраняем page_id
     page_id = await notion_sync.create_employee_row(name)
@@ -427,6 +491,7 @@ async def cb_toggle(cb: CallbackQuery):
     _, _, token, key = cb.data.split(":", 3)
     data = db.toggle_check(token, "hr", key)
     emp = db.get_by_token(token)
+    db.audit(token, "hr", "toggle", {"field": key, "value": bool(data.get(key))})
     # Синк в Notion
     await notion_sync.sync_hr_check(emp.get("notion_page_id"), key, bool(data.get(key)))
     await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
@@ -462,6 +527,53 @@ async def cb_send_single(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Неизвестное поле", show_alert=True)
         return
     await ask_hr_for(token, field, state, chain=False)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("hr:slackdraft:"))
+async def cb_slack_draft(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp:
+        await cb.answer("Сотрудник не найден", show_alert=True)
+        return
+    await cb.message.answer(
+        SLACK_PRESENTATION_DRAFT.format(name=esc(emp["name"]))
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("hr:log:"))
+async def cb_log(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp:
+        await cb.answer("Сотрудник не найден", show_alert=True)
+        return
+    events = db.get_audit_log(token, limit=20)
+    if not events:
+        await cb.message.answer(f"Журнал пуст для <b>{esc(emp['name'])}</b>.")
+        await cb.answer()
+        return
+    lines = [f"<b>📜 Журнал {esc(emp['name'])} (последние {len(events)})</b>\n"]
+    for ev in events:
+        ts = ev["ts"][:16].replace("T", " ")
+        actor_emoji = {"hr": "👤", "employee": "🧑", "bot": "🤖"}.get(ev["actor"], "·")
+        payload = ""
+        if ev.get("payload"):
+            try:
+                import json as _json
+                p = _json.loads(ev["payload"])
+                if p:
+                    payload = " " + " ".join(f"{k}={v}" for k, v in p.items() if len(str(v)) < 40)
+            except Exception:
+                pass
+        lines.append(f"<code>{ts}</code> {actor_emoji} {ev['event']}{esc(payload)}")
+    await cb.message.answer("\n".join(lines))
     await cb.answer()
 
 
@@ -513,6 +625,7 @@ async def cb_approve(cb: CallbackQuery):
                 await notion_sync.set_telegram_id(page_id, emp["telegram_id"])
     # Переходим в joined и запускаем авто-flow
     db.set_step(token, "joined")
+    db.audit(token, "hr", "approved", {"name": emp["name"]})
     await kickoff_flow_from_emp_side(token)
     await cb.answer("Подтверждено")
     try:
@@ -534,6 +647,7 @@ async def cb_reject(cb: CallbackQuery):
         await cb.answer("Запись не найдена", show_alert=True)
         return
     tg_id = emp.get("telegram_id")
+    db.audit(token, "hr", "rejected", {"name": emp["name"]})
     db.delete_employee(token)
     await cb.answer("Отклонено")
     try:
@@ -686,6 +800,13 @@ async def cb_offer_send(cb: CallbackQuery, state: FSMContext):
     )
     # Отправляем сотруднику
     await runtime.emp_bot.send_message(emp["telegram_id"], offer_text)
+    db.log_msg(token, "bot_to_emp", offer_text)
+    db.audit(token, "hr", "offer_sent", {
+        "salary": data["salary"],
+        "growth": data["growth"],
+        "probation": data["probation"],
+        "start_date": data["start_date"],
+    })
     # Отмечаем offer ✅ в HR-чек-листе
     db.set_check(token, "hr", "offer", True)
     # Сохраняем в Notion
@@ -734,7 +855,10 @@ async def flow_input(message: Message, state: FSMContext):
     parts = [spec["header"], "", esc(body)]
     if spec.get("extra"):
         parts += ["", spec["extra"]]
-    await runtime.emp_bot.send_message(emp["telegram_id"], "\n".join(parts))
+    sent_text = "\n".join(parts)
+    await runtime.emp_bot.send_message(emp["telegram_id"], sent_text)
+    db.log_msg(token, "bot_to_emp", sent_text)
+    db.audit(token, "hr", "material_sent", {"field": field})
 
     # Отмечаем в HR-чек-листе
     db.set_check(token, "hr", field, True)
