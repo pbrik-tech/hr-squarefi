@@ -22,6 +22,8 @@ from texts import (
     FLOW_ORDER,
     HR_KEYS,
     HR_ROADMAP,
+    OFFER_NOTION_URL,
+    OFFER_TEMPLATE,
 )
 
 router = Router(name="hr")
@@ -37,6 +39,14 @@ class Flow(StatesGroup):
 
 class AskSalary(StatesGroup):
     waiting = State()
+
+
+class Offer(StatesGroup):
+    salary = State()
+    growth = State()
+    probation = State()
+    start_date = State()
+    confirm = State()
 
 
 def is_hr(tg_id: int) -> bool:
@@ -113,6 +123,9 @@ def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
 
     # Кнопки повторной отправки интро и чек-листа (уже отправлялись автоматически)
     if linked:
+        rows.append([
+            InlineKeyboardButton(text="📄 Направить оффер", callback_data=f"hr:offer:{token}"),
+        ])
         rows.append([
             InlineKeyboardButton(text="📩 Повторить интро", callback_data=f"hr:resend:{token}:intro"),
             InlineKeyboardButton(text="📋 Повторить чек-лист", callback_data=f"hr:resend:{token}:checklist"),
@@ -521,6 +534,165 @@ async def cb_reject(cb: CallbackQuery):
             await runtime.emp_bot.send_message(tg_id, REJECT_TEXT)
         except Exception:
             pass
+
+
+# ---------- Offer FSM ----------
+
+
+import re as _re
+
+_ISO_DATE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@router.callback_query(F.data.startswith("hr:offer:"))
+async def cb_offer(cb: CallbackQuery, state: FSMContext):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await cb.answer("Сотрудник ещё не присоединился", show_alert=True)
+        return
+    await state.set_state(Offer.salary)
+    await state.update_data(token=token)
+    await cb.message.answer(
+        f"📄 <b>Оффер для {esc(emp['name'])}</b> — шаг 1/4.\n\n"
+        f"Пришли <b>оклад</b> (например: <code>3000 USDT/мес</code>). "
+        f"/cancel — отменить."
+    )
+    await cb.answer()
+
+
+@router.message(Offer.salary)
+async def offer_salary(message: Message, state: FSMContext):
+    if not is_hr(message.from_user.id):
+        return
+    val = (message.text or "").strip()
+    if not val:
+        await message.answer("Оклад не может быть пустым. Попробуй ещё раз.")
+        return
+    await state.update_data(salary=val)
+    await state.set_state(Offer.growth)
+    await message.answer(
+        "Шаг 2/4: пришли <b>план роста</b> "
+        "(например: <code>Senior через 6 мес при выполнении KPI</code>)."
+    )
+
+
+@router.message(Offer.growth)
+async def offer_growth(message: Message, state: FSMContext):
+    if not is_hr(message.from_user.id):
+        return
+    val = (message.text or "").strip()
+    if not val:
+        await message.answer("Пусто. Попробуй ещё раз.")
+        return
+    await state.update_data(growth=val)
+    await state.set_state(Offer.probation)
+    await message.answer(
+        "Шаг 3/4: пришли <b>длительность испытательного периода</b> "
+        "(например: <code>3 месяца</code>)."
+    )
+
+
+@router.message(Offer.probation)
+async def offer_probation(message: Message, state: FSMContext):
+    if not is_hr(message.from_user.id):
+        return
+    val = (message.text or "").strip()
+    if not val:
+        await message.answer("Пусто. Попробуй ещё раз.")
+        return
+    await state.update_data(probation=val)
+    await state.set_state(Offer.start_date)
+    await message.answer(
+        "Шаг 4/4: пришли <b>дату выхода</b> в формате <code>YYYY-MM-DD</code> "
+        "(например: <code>2026-05-01</code>)."
+    )
+
+
+@router.message(Offer.start_date)
+async def offer_start_date(message: Message, state: FSMContext):
+    if not is_hr(message.from_user.id):
+        return
+    val = (message.text or "").strip()
+    if not _ISO_DATE.match(val):
+        await message.answer(
+            "Не похоже на дату в формате <code>YYYY-MM-DD</code>. Попробуй ещё раз "
+            "(например: <code>2026-05-01</code>)."
+        )
+        return
+    await state.update_data(start_date=val)
+    data = await state.get_data()
+    preview = OFFER_TEMPLATE.format(
+        salary=esc(data["salary"]),
+        growth=esc(data["growth"]),
+        probation=esc(data["probation"]),
+        start_date=esc(data["start_date"]),
+    )
+    await state.set_state(Offer.confirm)
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Отправить сотруднику", callback_data="hr:offer_send"),
+        InlineKeyboardButton(text="❌ Отменить", callback_data="hr:offer_cancel"),
+    ]])
+    await message.answer(
+        "<b>Предпросмотр оффера:</b>\n\n" + preview + "\n\n"
+        "Подтверди отправку.",
+        reply_markup=confirm_kb,
+    )
+
+
+@router.callback_query(F.data == "hr:offer_cancel", Offer.confirm)
+async def cb_offer_cancel(cb: CallbackQuery, state: FSMContext):
+    if not is_hr(cb.from_user.id):
+        return
+    await state.clear()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer("❌ Оффер не отправлен.", reply_markup=main_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data == "hr:offer_send", Offer.confirm)
+async def cb_offer_send(cb: CallbackQuery, state: FSMContext):
+    if not is_hr(cb.from_user.id):
+        return
+    data = await state.get_data()
+    token = data["token"]
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await state.clear()
+        await cb.answer("Сотрудник не найден", show_alert=True)
+        return
+    offer_text = OFFER_TEMPLATE.format(
+        salary=esc(data["salary"]),
+        growth=esc(data["growth"]),
+        probation=esc(data["probation"]),
+        start_date=esc(data["start_date"]),
+    )
+    # Отправляем сотруднику
+    await runtime.emp_bot.send_message(emp["telegram_id"], offer_text)
+    # Отмечаем offer ✅ в HR-чек-листе
+    db.set_check(token, "hr", "offer", True)
+    # Сохраняем в Notion
+    page_id = emp.get("notion_page_id")
+    if page_id:
+        await notion_sync.set_salary(page_id, data["salary"])
+        await notion_sync.set_start_date(page_id, data["start_date"])
+        await notion_sync.set_comment(
+            page_id,
+            f"Рост: {data['growth']}. Испытательный: {data['probation']}.",
+        )
+    await state.clear()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer(
+        f"✅ Оффер отправлен <b>{esc(emp['name'])}</b>. Данные сохранены в Notion.\n\n"
+        f"Шаблон для формального PDF: {OFFER_NOTION_URL}",
+    )
+    emp_fresh = db.get_by_token(token)
+    await cb.message.answer(
+        render_emp_card(emp_fresh), reply_markup=emp_card_kb(token, emp_fresh)
+    )
+    await cb.answer("Отправлено")
 
 
 # ---------- Flow text input ----------

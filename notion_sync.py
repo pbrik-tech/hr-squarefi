@@ -114,6 +114,29 @@ async def set_salary(page_id: str, salary: str):
     await _request("PATCH", f"/pages/{page_id}", payload)
 
 
+async def set_start_date(page_id: str, iso_date: str):
+    """iso_date: 'YYYY-MM-DD'. Если None/пусто — не пишем."""
+    if not iso_date:
+        return
+    payload = {
+        "properties": {
+            "Start Date": {"date": {"start": iso_date}}
+        }
+    }
+    await _request("PATCH", f"/pages/{page_id}", payload)
+
+
+async def set_comment(page_id: str, text: str):
+    payload = {
+        "properties": {
+            "Comment": {
+                "rich_text": [{"text": {"content": text}}]
+            }
+        }
+    }
+    await _request("PATCH", f"/pages/{page_id}", payload)
+
+
 async def set_telegram_id(page_id: str, telegram_id: int):
     payload = {
         "properties": {
