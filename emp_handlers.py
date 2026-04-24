@@ -23,6 +23,29 @@ class WalletInput(StatesGroup):
     waiting = State()
 
 
+class SelfRegister(StatesGroup):
+    awaiting_name = State()
+
+
+SELF_REGISTER_PROMPT = (
+    "Привет! 👋 Я <b>Эмма</b>, HR-бот SquareFi.\n\n"
+    "Если тебя пригласили — открой ссылку-приглашение от HR. "
+    "Если хочешь начать онбординг самостоятельно — напиши, пожалуйста, свои "
+    "<b>ФИО на английском</b> (как в паспорте)."
+)
+
+PENDING_APPROVAL_TEXT = (
+    "✅ Я передала твой запрос HR. Жду, пока подтвердят — "
+    "как только это произойдёт, я сразу пришлю следующий шаг. "
+    "Обычно это занимает до пары часов."
+)
+
+REJECT_TEXT = (
+    "К сожалению, твой запрос на онбординг не подтверждён. "
+    "Если это ошибка — свяжись с HR напрямую."
+)
+
+
 def esc(s) -> str:
     return html.escape(str(s or ""))
 
@@ -91,15 +114,58 @@ async def start_deep(message: Message, command):
 
 
 @router.message(CommandStart())
-async def start(message: Message):
+async def start(message: Message, state: FSMContext):
     emp = db.get_by_tg(message.from_user.id)
     if emp:
-        await message.answer(render_emp(emp), reply_markup=emp_checklist_kb(emp["token"]))
-    else:
+        if emp.get("flow_step") == "pending_approval":
+            await message.answer(PENDING_APPROVAL_TEXT)
+        else:
+            await message.answer(
+                render_emp(emp), reply_markup=emp_checklist_kb(emp["token"])
+            )
+        return
+    # Новый пользователь — предлагаем self-register
+    await state.set_state(SelfRegister.awaiting_name)
+    await message.answer(SELF_REGISTER_PROMPT)
+
+
+@router.message(SelfRegister.awaiting_name)
+async def self_register_name(message: Message, state: FSMContext):
+    from hr_handlers import self_register_kb
+
+    name = (message.text or "").strip()
+    if len(name) < 3 or " " not in name:
         await message.answer(
-            "Привет! Похоже, у тебя ещё нет активной ссылки-приглашения. "
-            "Попроси HR выслать её."
+            "Пожалуйста, напиши ФИО полностью (имя и фамилию) латиницей."
         )
+        return
+    # На случай гонки — проверяем, не создан ли уже
+    existing = db.get_by_tg(message.from_user.id)
+    if existing:
+        await state.clear()
+        if existing.get("flow_step") == "pending_approval":
+            await message.answer(PENDING_APPROVAL_TEXT)
+        else:
+            await message.answer(
+                render_emp(existing),
+                reply_markup=emp_checklist_kb(existing["token"]),
+            )
+        return
+
+    token = db.create_employee_self(name, message.from_user.id)
+    await state.clear()
+    username = (
+        f"@{message.from_user.username}" if message.from_user.username else "—"
+    )
+    await runtime.hr_bot.send_message(
+        cfg.hr_id,
+        f"🆕 <b>Новый запрос на онбординг</b>\n\n"
+        f"ФИО: <b>{esc(name)}</b>\n"
+        f"Telegram: <code>{message.from_user.id}</code> · {esc(username)}\n\n"
+        f"Подтверди, чтобы начать процесс.",
+        reply_markup=self_register_kb(token),
+    )
+    await message.answer(PENDING_APPROVAL_TEXT)
 
 
 @router.message(Command("getme"))
@@ -179,11 +245,16 @@ async def wallet_input(message: Message, state: FSMContext):
 
 
 @router.message()
-async def fallback(message: Message):
+async def fallback(message: Message, state: FSMContext):
     emp = db.get_by_tg(message.from_user.id)
     if emp:
-        await message.answer(render_emp(emp), reply_markup=emp_checklist_kb(emp["token"]))
-    else:
-        await message.answer(
-            "У тебя пока нет активной ссылки. Попроси HR выслать приглашение."
-        )
+        if emp.get("flow_step") == "pending_approval":
+            await message.answer(PENDING_APPROVAL_TEXT)
+        else:
+            await message.answer(
+                render_emp(emp), reply_markup=emp_checklist_kb(emp["token"])
+            )
+        return
+    # Новый пользователь написал произвольное сообщение — переводим в self-register
+    await state.set_state(SelfRegister.awaiting_name)
+    await message.answer(SELF_REGISTER_PROMPT)

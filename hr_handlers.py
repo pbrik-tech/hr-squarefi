@@ -60,6 +60,17 @@ def next_field(current: str) -> Optional[str]:
     return FLOW_ORDER[i + 1] if i + 1 < len(FLOW_ORDER) else None
 
 
+def self_register_kb(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"hr:approve:{token}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"hr:reject:{token}"),
+            ]
+        ]
+    )
+
+
 def main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -454,6 +465,62 @@ async def cb_resend(cb: CallbackQuery):
         return
     emp = db.get_by_token(token)
     await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
+
+
+@router.callback_query(F.data.startswith("hr:approve:"))
+async def cb_approve(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp:
+        await cb.answer("Запись не найдена", show_alert=True)
+        return
+    # Создаём строку в Notion, если ещё не создана
+    if not emp.get("notion_page_id"):
+        page_id = await notion_sync.create_employee_row(emp["name"])
+        if page_id:
+            db.set_notion_page_id(token, page_id)
+            if emp.get("telegram_id"):
+                await notion_sync.set_telegram_id(page_id, emp["telegram_id"])
+    # Переходим в joined и запускаем авто-flow
+    db.set_step(token, "joined")
+    await kickoff_flow_from_emp_side(token)
+    await cb.answer("Подтверждено")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer(
+        f"✅ Сотрудник <b>{esc(emp['name'])}</b> подтверждён. Онбординг начат."
+    )
+
+
+@router.callback_query(F.data.startswith("hr:reject:"))
+async def cb_reject(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp:
+        await cb.answer("Запись не найдена", show_alert=True)
+        return
+    tg_id = emp.get("telegram_id")
+    db.delete_employee(token)
+    await cb.answer("Отклонено")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.message.answer(
+        f"❌ Запрос от <b>{esc(emp['name'])}</b> отклонён, запись удалена."
+    )
+    if tg_id:
+        try:
+            from emp_handlers import REJECT_TEXT
+            await runtime.emp_bot.send_message(tg_id, REJECT_TEXT)
+        except Exception:
+            pass
 
 
 # ---------- Flow text input ----------

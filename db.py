@@ -54,6 +54,28 @@ def create_employee(name: str) -> str:
     return token
 
 
+def create_employee_self(name: str, telegram_id: int) -> str:
+    """Сотрудник сам написал первым — создаём карточку с TG ID, ждём апрув HR."""
+    token = secrets.token_urlsafe(9)
+    with _conn() as c:
+        # Освобождаем TG ID у старых записей (если было)
+        c.execute(
+            "UPDATE employees SET telegram_id = NULL WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        c.execute(
+            "INSERT INTO employees (token, name, created_at, flow_step, telegram_id) "
+            "VALUES (?, ?, ?, 'pending_approval', ?)",
+            (token, name, datetime.utcnow().isoformat(), telegram_id),
+        )
+    return token
+
+
+def delete_employee(token: str):
+    with _conn() as c:
+        c.execute("DELETE FROM employees WHERE token = ?", (token,))
+
+
 def link_employee(token: str, telegram_id: int) -> bool:
     with _conn() as c:
         # Освобождаем этот telegram_id у других записей (на случай тестирования с одного аккаунта)
