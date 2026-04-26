@@ -241,6 +241,19 @@ def get_messages_log(token: str, limit: int = 30):
     return [dict(r) for r in rows]
 
 
+def wipe_all():
+    """Удаляет всех сотрудников и связанные данные. FSM-состояния тоже."""
+    with _conn() as c:
+        c.execute("DELETE FROM employees")
+        c.execute("DELETE FROM audit_log")
+        c.execute("DELETE FROM messages_log")
+        # fsm_state создаётся в storage.py — может не существовать, пытаемся
+        try:
+            c.execute("DELETE FROM fsm_state")
+        except sqlite3.OperationalError:
+            pass
+
+
 def get_stale_employees(days: int = 3):
     """Сотрудники без движения > days дней, ещё не завершившие онбординг."""
     threshold = (datetime.utcnow() - timedelta(days=days)).isoformat()

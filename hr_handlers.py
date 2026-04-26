@@ -354,6 +354,47 @@ async def menu(message: Message, state: FSMContext):
         await message.answer("Меню HR:", reply_markup=main_kb())
 
 
+@router.message(Command("wipe"))
+async def wipe(message: Message):
+    if not is_hr(message.from_user.id):
+        return
+    employees = db.list_all()
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🗑 ДА, удалить ВСЁ", callback_data="hr:wipe_confirm"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="hr:wipe_cancel"),
+    ]])
+    await message.answer(
+        f"⚠️ <b>Удалить данные {len(employees)} сотрудников</b> из бота?\n\n"
+        f"Будут стёрты: записи сотрудников, чек-листы, журналы действий и сообщений, "
+        f"FSM-состояния. <b>Notion-таблицу это НЕ затрагивает</b> — старые строки "
+        f"там останутся, удали их вручную если нужно.\n\nДействие необратимо.",
+        reply_markup=confirm_kb,
+    )
+
+
+@router.callback_query(F.data == "hr:wipe_confirm")
+async def cb_wipe_confirm(cb: CallbackQuery, state: FSMContext):
+    if not is_hr(cb.from_user.id):
+        return
+    db.wipe_all()
+    await state.clear()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer(
+        "🗑 Все данные сотрудников удалены. Можешь начинать тестировать заново.",
+        reply_markup=main_kb(),
+    )
+    await cb.answer("Готово")
+
+
+@router.callback_query(F.data == "hr:wipe_cancel")
+async def cb_wipe_cancel(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer("❌ Отменено.")
+    await cb.answer()
+
+
 @router.message(Command("stale"))
 async def stale(message: Message):
     if not is_hr(message.from_user.id):
