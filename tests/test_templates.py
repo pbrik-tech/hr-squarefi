@@ -43,9 +43,9 @@ def test_slack_draft_renders_with_name():
     assert "Ivan Ivanov" in rendered
 
 
-def test_intro_mentions_polina():
-    """По ТЗ интро должно дословно представляться как Полина."""
-    assert "Полина" in INTRO_MESSAGE
+def test_intro_mentions_emma():
+    """Интро представляется от имени Эмма (HR-бот персона)."""
+    assert "Эмма" in INTRO_MESSAGE
 
 
 def test_self_register_has_no_placeholders():

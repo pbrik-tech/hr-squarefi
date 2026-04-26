@@ -19,9 +19,11 @@ from texts import (
     EMP_KEYS,
     EMP_NOT_LINKED_HINT,
     EMP_WELCOME_AFTER_LINK,
+    HR_CHAT_FROM_EMP_HEADER,
     PENDING_APPROVAL_TEXT as _PENDING,
     REJECT_TEXT as _REJECT,
     SELF_REGISTER_PROMPT as _SELF_REG,
+    TEAM_PHOTO_THANKS,
 )
 
 router = Router(name="emp")
@@ -251,12 +253,59 @@ async def wallet_input(message: Message, state: FSMContext):
     )
 
 
+@router.message(F.photo)
+async def emp_photo(message: Message):
+    """Сотрудник прислал фото — пересылаем HR и отмечаем team_photo ✅."""
+    emp = db.get_by_tg(message.from_user.id)
+    if not emp:
+        await message.answer(
+            "Спасибо за фото! Сначала заверши регистрацию — напиши ФИО на английском."
+        )
+        return
+    # Пересылаем фото HR с подписью
+    await runtime.hr_bot.send_photo(
+        cfg.hr_id,
+        message.photo[-1].file_id,
+        caption=(
+            f"📷 Фото от <b>{esc(emp['name'])}</b> "
+            f"(<code>{message.from_user.id}</code>) — "
+            f"для раздела «Команда» в Notion."
+        ),
+    )
+    db.log_msg(emp["token"], "emp_to_bot", "[photo]")
+    db.audit(emp["token"], "employee", "photo_sent")
+    db.set_check(emp["token"], "hr", "team_photo", True)
+    await message.answer(TEAM_PHOTO_THANKS)
+
+
 @router.message()
 async def fallback(message: Message, state: FSMContext):
     emp = db.get_by_tg(message.from_user.id)
     if emp:
         if emp.get("flow_step") == "pending_approval":
             await message.answer(PENDING_APPROVAL_TEXT)
+            return
+        # Свободный чат: пересылаем сообщение HR с кнопкой «Reply»
+        text = message.text or message.caption or ""
+        if text.strip():
+            payload = HR_CHAT_FROM_EMP_HEADER.format(
+                name=esc(emp["name"]),
+                tg_id=message.from_user.id,
+                text=esc(text),
+            )
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="💬 Ответить",
+                    callback_data=f"hr:reply:{emp['token']}",
+                )
+            ]])
+            await runtime.hr_bot.send_message(cfg.hr_id, payload, reply_markup=kb)
+            db.log_msg(emp["token"], "emp_to_bot", text)
+            db.audit(emp["token"], "employee", "chat_message", {"text": text[:200]})
+            await message.answer(
+                "✅ Сообщение передано HR — отвечу как только смогу."
+            )
         else:
             await message.answer(
                 render_emp(emp), reply_markup=emp_checklist_kb(emp["token"])

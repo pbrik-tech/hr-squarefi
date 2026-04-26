@@ -20,6 +20,8 @@ from texts import (
     EMP_KEYS,
     FLOW_BY_FIELD,
     FLOW_ORDER,
+    HR_CHAT_FROM_EMP_HEADER,
+    HR_CHAT_REPLY_HEADER,
     HR_DASHBOARD_INACCESSIBLE,
     HR_FINAL_REMINDER,
     HR_GREETING,
@@ -31,6 +33,8 @@ from texts import (
     OFFER_NOTION_URL,
     OFFER_TEMPLATE,
     SLACK_PRESENTATION_DRAFT,
+    TEAM_PHOTO_REQUEST,
+    WELCOME_MESSAGE,
 )
 
 router = Router(name="hr")
@@ -54,6 +58,10 @@ class Offer(StatesGroup):
     probation = State()
     start_date = State()
     confirm = State()
+
+
+class HRChatReply(StatesGroup):
+    waiting = State()
 
 
 def is_hr(tg_id: int) -> bool:
@@ -93,6 +101,7 @@ def main_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="➕ Новый сотрудник", callback_data="hr:new")],
             [InlineKeyboardButton(text="👥 Список сотрудников", callback_data="hr:list")],
+            [InlineKeyboardButton(text="▶️ Отправить следующие материалы", callback_data="hr:next")],
         ]
     )
 
@@ -202,6 +211,11 @@ def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
                 )
             ])
 
+    if linked:
+        rows.append([
+            InlineKeyboardButton(text="🎉 Отправить welcome", callback_data=f"hr:welcome:{token}"),
+            InlineKeyboardButton(text="📷 Запросить фото", callback_data=f"hr:askphoto:{token}"),
+        ])
     rows.append([
         InlineKeyboardButton(text="📋 Черновик для #all-squarefi", callback_data=f"hr:slackdraft:{token}"),
         InlineKeyboardButton(text="📜 Журнал действий", callback_data=f"hr:log:{token}"),
@@ -454,6 +468,42 @@ async def skip_field(message: Message, state: FSMContext):
 # ---------- Callbacks ----------
 
 
+@router.callback_query(F.data == "hr:next")
+async def cb_next(cb: CallbackQuery, state: FSMContext):
+    """Найти активный онбординг и продолжить авто-цепочку."""
+    if not is_hr(cb.from_user.id):
+        return
+    employees = db.list_all()
+    # Берём первого подходящего: linked + flow_step в материалах
+    candidates = [
+        e for e in employees
+        if e.get("telegram_id")
+        and e.get("flow_step") in (set(FLOW_ORDER) | {"joined"})
+    ]
+    if not candidates:
+        await cb.message.answer(
+            "Сейчас нет активных онбордингов с незавершённой передачей материалов. "
+            "Создай нового сотрудника или открой карточку существующего.",
+            reply_markup=main_kb(),
+        )
+        await cb.answer()
+        return
+    # Сортируем: самый недавний по last_action_at сверху
+    candidates.sort(
+        key=lambda e: e.get("last_action_at") or e.get("created_at") or "",
+        reverse=True,
+    )
+    emp = candidates[0]
+    field = emp["flow_step"]
+    if field in (None, "joined"):
+        field = FLOW_ORDER[0]
+    await ask_hr_for(emp["token"], field, state, chain=True)
+    await cb.message.answer(
+        f"▶️ Продолжаю онбординг для <b>{esc(emp['name'])}</b>."
+    )
+    await cb.answer()
+
+
 @router.callback_query(F.data == "hr:home")
 async def cb_home(cb: CallbackQuery, state: FSMContext):
     if not is_hr(cb.from_user.id):
@@ -569,6 +619,46 @@ async def cb_send_single(cb: CallbackQuery, state: FSMContext):
         return
     await ask_hr_for(token, field, state, chain=False)
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("hr:welcome:"))
+async def cb_welcome(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await cb.answer("Сотрудник не привязан", show_alert=True)
+        return
+    await runtime.emp_bot.send_message(emp["telegram_id"], WELCOME_MESSAGE)
+    db.log_msg(token, "bot_to_emp", WELCOME_MESSAGE)
+    db.audit(token, "hr", "welcome_sent")
+    db.set_check(token, "hr", "welcome", True)
+    emp_fresh = db.get_by_token(token)
+    await cb.message.edit_text(
+        render_emp_card(emp_fresh), reply_markup=emp_card_kb(token, emp_fresh)
+    )
+    await cb.answer("Welcome отправлено")
+
+
+@router.callback_query(F.data.startswith("hr:askphoto:"))
+async def cb_ask_photo(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await cb.answer("Сотрудник не привязан", show_alert=True)
+        return
+    await runtime.emp_bot.send_message(emp["telegram_id"], TEAM_PHOTO_REQUEST)
+    db.log_msg(token, "bot_to_emp", TEAM_PHOTO_REQUEST)
+    db.audit(token, "hr", "team_photo_requested")
+    db.set_check(token, "hr", "team_photo", True)
+    emp_fresh = db.get_by_token(token)
+    await cb.message.edit_text(
+        render_emp_card(emp_fresh), reply_markup=emp_card_kb(token, emp_fresh)
+    )
+    await cb.answer("Запрос отправлен")
 
 
 @router.callback_query(F.data.startswith("hr:slackdraft:"))
@@ -963,6 +1053,49 @@ async def salary_input(message: Message, state: FSMContext):
     await message.answer(
         render_emp_card(emp_fresh), reply_markup=emp_card_kb(token, emp_fresh)
     )
+
+
+# ---------- Прокси-чат: HR отвечает сотруднику ----------
+
+
+@router.callback_query(F.data.startswith("hr:reply:"))
+async def cb_reply(cb: CallbackQuery, state: FSMContext):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await cb.answer("Сотрудник не привязан", show_alert=True)
+        return
+    await state.set_state(HRChatReply.waiting)
+    await state.update_data(token=token)
+    await cb.message.answer(
+        f"💬 Напиши ответ для <b>{esc(emp['name'])}</b>. /cancel — отменить."
+    )
+    await cb.answer()
+
+
+@router.message(HRChatReply.waiting)
+async def hr_reply_input(message: Message, state: FSMContext):
+    if not is_hr(message.from_user.id):
+        return
+    data = await state.get_data()
+    token = data.get("token")
+    emp = db.get_by_token(token) if token else None
+    if not emp or not emp["telegram_id"]:
+        await state.clear()
+        await message.answer("Сотрудник не найден.")
+        return
+    text = message.text or ""
+    if not text.strip():
+        await message.answer("Пустое сообщение. Попробуй ещё раз.")
+        return
+    payload = HR_CHAT_REPLY_HEADER.format(text=esc(text))
+    await runtime.emp_bot.send_message(emp["telegram_id"], payload)
+    db.log_msg(token, "bot_to_emp", payload)
+    db.audit(token, "hr", "chat_reply", {"text": text[:200]})
+    await state.clear()
+    await message.answer(f"✅ Ответ отправлен <b>{esc(emp['name'])}</b>.")
 
 
 # ---------- Fallback ----------
