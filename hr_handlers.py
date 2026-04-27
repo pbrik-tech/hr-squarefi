@@ -157,9 +157,23 @@ def list_kb(employees: list) -> InlineKeyboardMarkup:
 
 def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
     hr_checks = db.get_checks(token, "hr")
+    emp_checks = db.get_checks(token, "emp")
     linked = bool(emp.get("telegram_id"))
     rows = []
-    # Чек-лист дорожной карты HR (13 пунктов)
+
+    # --- Чек-лист сотрудника (HR может принудительно закрыть пункты) ---
+    if linked:
+        for key, label in EMP_CHECKLIST:
+            mark = "✅" if emp_checks.get(key) else "⬜"
+            short = label if len(label) < 38 else label[:35] + "…"
+            rows.append(
+                [InlineKeyboardButton(
+                    text=f"👤 {mark} {short}",
+                    callback_data=f"hr:te:{token}:{key}",
+                )]
+            )
+
+    # --- Чек-лист дорожной карты HR ---
     for key, label in HR_ROADMAP:
         mark = "✅" if hr_checks.get(key) else "⬜"
         short = label if len(label) < 45 else label[:42] + "…"
@@ -250,11 +264,6 @@ def render_emp_card(emp: dict) -> str:
         "flow_done": "Статус: <b>все материалы отправлены ✅</b>",
     }.get(step, f"Статус: <b>ждём от HR — {FLOW_BY_FIELD[step]['ask']}</b>")
 
-    emp_lines = []
-    for key, label in EMP_CHECKLIST:
-        mark = "✅" if emp_checks.get(key) else "⬜"
-        emp_lines.append(f"{mark} {esc(label)}")
-
     invite_link = f"https://t.me/{cfg.emp_bot_username}?start={emp['token']}"
 
     return (
@@ -265,8 +274,8 @@ def render_emp_card(emp: dict) -> str:
         f"Ссылка-приглашение: <code>{esc(invite_link)}</code>\n\n"
         f"<b>Прогресс HR:</b> {hr_done}/{len(HR_KEYS)} <code>{progress_bar(hr_done, len(HR_KEYS))}</code>\n"
         f"<b>Прогресс сотрудника:</b> {emp_done}/{len(EMP_KEYS)} <code>{progress_bar(emp_done, len(EMP_KEYS))}</code>\n\n"
-        f"<b>Чек-лист сотрудника:</b>\n" + "\n".join(emp_lines) + "\n\n"
-        f"<i>Нажимай на пункты дорожной карты ниже, чтобы отмечать свои шаги.</i>"
+        f"<i>👤 = чек-лист сотрудника (можно закрыть принудительно). "
+        f"Без значка = твоя дорожная карта.</i>"
     )
 
 
@@ -587,6 +596,25 @@ async def cb_toggle(cb: CallbackQuery):
     await notion_sync.sync_hr_check(emp.get("notion_page_id"), key, bool(data.get(key)))
     await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
     await cb.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("hr:te:"))
+async def cb_toggle_emp(cb: CallbackQuery):
+    """HR принудительно отмечает пункт чек-листа сотрудника."""
+    if not is_hr(cb.from_user.id):
+        return
+    _, _, token, key = cb.data.split(":", 3)
+    if key not in EMP_KEYS:
+        await cb.answer("Неизвестный пункт", show_alert=True)
+        return
+    data = db.toggle_check(token, "emp", key)
+    emp = db.get_by_token(token)
+    new_val = bool(data.get(key))
+    db.audit(token, "hr", "force_emp_toggle", {"field": key, "value": new_val})
+    # Синк в Notion (та же мапа, что и для самостоятельных отметок сотрудника)
+    await notion_sync.sync_emp_check(emp.get("notion_page_id"), key, new_val)
+    await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
+    await cb.answer(f"{'Закрыто' if new_val else 'Открыто'}")
 
 
 @router.callback_query(F.data.startswith("hr:flow:"))
