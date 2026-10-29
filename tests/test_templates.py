@@ -53,9 +53,10 @@ def test_self_register_has_no_placeholders():
     assert "{" not in SELF_REGISTER_PROMPT or "}" in SELF_REGISTER_PROMPT
 
 
-def test_emp_checklist_has_7_items():
-    # По ТЗ — 7 пунктов (gmail доступ + 2FA разделены)
-    assert len(EMP_CHECKLIST) == 7
+def test_emp_checklist_has_8_items():
+    # 7 пунктов по ТЗ (gmail доступ + 2FA разделены) + Fleet последним
+    assert len(EMP_CHECKLIST) == 8
+    assert EMP_CHECKLIST[-1][0] == "fleet"
     keys = {k for k, _ in EMP_CHECKLIST}
     assert "gmail_access" in keys
     assert "email_2fa" in keys

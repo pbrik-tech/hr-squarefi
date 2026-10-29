@@ -88,3 +88,19 @@ def test_list_all_reverse_order(tmp_db):
     # list_all сортирует по created_at DESC — последний созданный первый
     assert all_emp[0]["token"] == t2
     assert all_emp[1]["token"] == t1
+
+
+def test_fleet_gating(tmp_path, monkeypatch):
+    import db as dbm
+    monkeypatch.setattr(dbm, "DB_PATH", str(tmp_path / "f.db"))
+    dbm.init_db()
+    from hr_handlers import fleet_missing
+
+    token = dbm.create_employee("Ivan Test") if hasattr(dbm, "create_employee") else None
+    if token is None:
+        return
+    assert len(fleet_missing(token)) == 4
+    dbm.set_check(token, "emp", "nda", True)
+    for k in ("email", "slack_access", "notion_access"):
+        dbm.set_check(token, "hr", k, True)
+    assert fleet_missing(token) == []
