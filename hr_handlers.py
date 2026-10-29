@@ -266,11 +266,18 @@ def render_emp_card(emp: dict) -> str:
         else "Кошелёк: <i>ещё не получен</i>"
     )
     step = emp.get("flow_step") or "new"
-    step_line = {
+    step_lines = {
         "new": "Статус: <i>ссылка-приглашение не открыта</i>",
+        "pending_approval": "Статус: <i>ждёт подтверждения HR</i>",
         "joined": "Статус: <b>присоединился, ждёт материалы</b>",
         "flow_done": "Статус: <b>все материалы отправлены ✅</b>",
-    }.get(step, f"Статус: <b>ждём от HR — {FLOW_BY_FIELD[step]['ask']}</b>")
+    }
+    if step in step_lines:
+        step_line = step_lines[step]
+    elif step in FLOW_BY_FIELD:
+        step_line = f"Статус: <b>ждём от HR — {FLOW_BY_FIELD[step]['ask']}</b>"
+    else:
+        step_line = f"Статус: <i>{esc(step)}</i>"
 
     invite_link = f"https://t.me/{cfg.emp_bot_username}?start={emp['token']}"
 
