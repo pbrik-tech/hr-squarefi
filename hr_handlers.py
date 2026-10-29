@@ -20,6 +20,8 @@ from texts import (
     EMP_KEYS,
     FLOW_BY_FIELD,
     FLOW_ORDER,
+    FLEET_MESSAGE,
+    FLEET_PREREQS,
     HR_CHAT_FROM_EMP_HEADER,
     HR_CHAT_REPLY_HEADER,
     HR_DASHBOARD_INACCESSIBLE,
@@ -29,6 +31,9 @@ from texts import (
     HR_KEYS,
     HR_NEW_SELF_REGISTER_REQUEST,
     HR_ROADMAP,
+    HR_FLEET_BLOCKED,
+    HR_FLEET_READY,
+    HR_FLEET_SENT,
     HR_SALARY_SAVED,
     OFFER_NOTION_URL,
     OFFER_TEMPLATE,
@@ -229,6 +234,9 @@ def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text="🎉 Отправить welcome", callback_data=f"hr:welcome:{token}"),
             InlineKeyboardButton(text="📷 Запросить фото", callback_data=f"hr:askphoto:{token}"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="🛡 Отправить Fleet (последний шаг)", callback_data=f"hr:fleet:{token}"),
         ])
     rows.append([
         InlineKeyboardButton(text="📋 Черновик для #all-squarefi", callback_data=f"hr:slackdraft:{token}"),
@@ -596,6 +604,7 @@ async def cb_toggle(cb: CallbackQuery):
     await notion_sync.sync_hr_check(emp.get("notion_page_id"), key, bool(data.get(key)))
     await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
     await cb.answer("Готово")
+    await maybe_suggest_fleet(token)
 
 
 @router.callback_query(F.data.startswith("hr:te:"))
@@ -615,6 +624,7 @@ async def cb_toggle_emp(cb: CallbackQuery):
     await notion_sync.sync_emp_check(emp.get("notion_page_id"), key, new_val)
     await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
     await cb.answer(f"{'Закрыто' if new_val else 'Открыто'}")
+    await maybe_suggest_fleet(token)
 
 
 @router.callback_query(F.data.startswith("hr:flow:"))
@@ -662,6 +672,8 @@ async def cb_welcome(cb: CallbackQuery):
     db.log_msg(token, "bot_to_emp", WELCOME_MESSAGE)
     db.audit(token, "hr", "welcome_sent")
     db.set_check(token, "hr", "welcome", True)
+    # Онбординг завершён → статус в Notion
+    await notion_sync.set_status(emp.get("notion_page_id"), notion_sync.STATUS_ON_PROBATION)
     emp_fresh = db.get_by_token(token)
     await cb.message.edit_text(
         render_emp_card(emp_fresh), reply_markup=emp_card_kb(token, emp_fresh)
@@ -781,7 +793,13 @@ async def cb_approve(cb: CallbackQuery):
         if page_id:
             db.set_notion_page_id(token, page_id)
             if emp.get("telegram_id"):
-                await notion_sync.set_telegram_id(page_id, emp["telegram_id"])
+                username = None
+                try:
+                    chat = await runtime.emp_bot.get_chat(emp["telegram_id"])
+                    username = chat.username
+                except Exception:
+                    pass
+                await notion_sync.set_telegram(page_id, emp["telegram_id"], username)
     # Переходим в joined и запускаем авто-flow
     db.set_step(token, "joined")
     db.audit(token, "hr", "approved", {"name": emp["name"]})
@@ -1030,10 +1048,20 @@ async def flow_input(message: Message, state: FSMContext):
         found = notion_sync.extract_email(body)
         if found:
             await notion_sync.set_email(emp["notion_page_id"], found)
+    # Телефон → Phone, ссылка на верификацию → SumSub Link
+    if field == "phone":
+        phone = notion_sync.extract_phone(body)
+        if phone:
+            await notion_sync.set_phone(emp.get("notion_page_id"), phone)
+    if field == "verify":
+        url = notion_sync.extract_url(body)
+        if url:
+            await notion_sync.set_sumsub_link(emp.get("notion_page_id"), url)
 
     await message.answer(
         f"✅ Отправлено сотруднику <b>{esc(emp['name'])}</b>: {spec['ask']}"
     )
+    await maybe_suggest_fleet(token)
 
     if chain:
         nxt = next_field(field)
@@ -1138,3 +1166,57 @@ async def fallback(message: Message):
             "Это HR-дашборд. Если ты новый сотрудник — открой ссылку, "
             f"которую прислал HR, на бота @{cfg.emp_bot_username}."
         )
+
+
+
+# ---------- Fleet: последний шаг онбординга ----------
+
+
+def fleet_missing(token: str) -> list:
+    """Что ещё не выполнено из условий для отправки Fleet."""
+    checks = {"hr": db.get_checks(token, "hr"), "emp": db.get_checks(token, "emp")}
+    return [why for kind, key, why in FLEET_PREREQS if not checks[kind].get(key)]
+
+
+async def maybe_suggest_fleet(token: str):
+    """Один раз подсказывает HR, что пора отправлять Fleet."""
+    emp = db.get_by_token(token)
+    if not emp or not emp.get("telegram_id"):
+        return
+    hr_checks = db.get_checks(token, "hr")
+    if hr_checks.get("fleet") or hr_checks.get("fleet_suggested"):
+        return
+    if fleet_missing(token):
+        return
+    db.set_check(token, "hr", "fleet_suggested", True)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🛡 Отправить Fleet", callback_data=f"hr:fleet:{token}"),
+    ]])
+    await runtime.hr_bot.send_message(
+        cfg.hr_id, HR_FLEET_READY.format(name=esc(emp["name"])), reply_markup=kb
+    )
+
+
+@router.callback_query(F.data.startswith("hr:fleet:"))
+async def cb_fleet(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    from emp_handlers import emp_checklist_kb
+
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp or not emp["telegram_id"]:
+        await cb.answer("Сотрудник не привязан", show_alert=True)
+        return
+    missing = fleet_missing(token)
+    if missing:
+        await cb.answer(HR_FLEET_BLOCKED.format(missing="\n• ".join(missing)), show_alert=True)
+        return
+    await runtime.emp_bot.send_message(
+        emp["telegram_id"], FLEET_MESSAGE, reply_markup=emp_checklist_kb(token)
+    )
+    db.log_msg(token, "bot_to_emp", FLEET_MESSAGE)
+    db.audit(token, "hr", "fleet_sent")
+    db.set_check(token, "hr", "fleet", True)
+    await cb.message.answer(HR_FLEET_SENT.format(name=esc(emp["name"])))
+    await cb.answer("Fleet отправлен")

@@ -13,30 +13,40 @@ NOTION_VERSION = "2022-06-28"
 API = "https://api.notion.com/v1"
 
 # Соответствие внутренних ключей чек-листа → названия колонок в Notion.
-# ВАЖНО: колонка "Personа" содержит кириллическую «а» (U+0430).
+# База: HR / Team (https://app.notion.com/p/1fdfa0f74075475e8f040483ca5a4bba),
+# с 10.2026 заменила старую HR / Employments.
 EMP_NOTION_MAP = {
-    "verification": "Personа",
+    "verification": "SumSub",
     "nda": "NDA",
     "contract": "Agreement",
-    "gmail_access": "Email",  # галочка Email в Notion ставится когда доступ к почте выдан
-    "wallet": "Wallet",
+    "gmail_access": "Email access",  # галочка ставится когда доступ к почте выдан
+    "wallet": "Wallet issued",
+    "fleet": "Fleet MDM",
     # "email_2fa" и "phone" — колонок нет
 }
 
 HR_NOTION_MAP = {
     "tariff": "VIP",
-    "slack_access": "Slack",
-    "crm_access": "CRM",
-    "notion_access": "Notion",
+    "slack_access": "Slack access",
+    "crm_access": "CRM access",
+    "notion_access": "Notion access",
     # "admin_access" — в Notion колонки нет
 }
 
-WALLET_COLUMN = "SquareFi Wallet (USDT TRC20)"
+WALLET_COLUMN = "Wallet (USDT TRC20)"
 TG_ID_COLUMN = "Telegram ID"
-TITLE_COLUMN = "Employee / Candidate"
+TITLE_COLUMN = "Name"
 STATUS_COLUMN = "Status"
-EMAIL_COLUMN = "Email address"
+EMAIL_COLUMN = "Email"
 SALARY_COLUMN = "Salary"
+SALARY_TYPE_COLUMN = "Salary Type"
+TELEGRAM_COLUMN = "Telegram"
+PHONE_COLUMN = "Phone"
+SUMSUB_LINK_COLUMN = "SumSub Link"
+PHOTO_COLUMN = "Photo"
+
+STATUS_ON_PROBATION = "On Probation"
+SALARY_TYPE_CRYPTO = "Crypto"
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w.-]+)+")
 
@@ -44,6 +54,20 @@ EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w.-]+)+")
 def extract_email(text: str) -> Optional[str]:
     m = EMAIL_RE.search(text or "")
     return m.group(0) if m else None
+
+
+URL_RE = re.compile(r"https?://\S+")
+PHONE_RE = re.compile(r"\+?\d[\d\s()\-]{6,}\d")
+
+
+def extract_url(text: str) -> Optional[str]:
+    m = URL_RE.search(text or "")
+    return m.group(0).rstrip(".,;)") if m else None
+
+
+def extract_phone(text: str) -> Optional[str]:
+    m = PHONE_RE.search(text or "")
+    return m.group(0).strip() if m else None
 
 
 def _enabled() -> bool:
@@ -127,14 +151,17 @@ async def set_start_date(page_id: str, iso_date: str):
 
 
 async def set_comment(page_id: str, text: str):
+    """В таблице Team нет колонки Comment — пишем комментарий абзацем в тело страницы."""
     payload = {
-        "properties": {
-            "Comment": {
-                "rich_text": [{"text": {"content": text}}]
+        "children": [
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]},
             }
-        }
+        ]
     }
-    await _request("PATCH", f"/pages/{page_id}", payload)
+    await _request("PATCH", f"/blocks/{page_id}/children", payload)
 
 
 async def set_telegram_id(page_id: str, telegram_id: int):
@@ -182,3 +209,66 @@ async def sync_hr_check(page_id: Optional[str], key: str, value: bool):
     col = HR_NOTION_MAP.get(key)
     if col:
         await set_checkbox(page_id, col, value)
+
+
+async def _set_props(page_id: Optional[str], props: dict):
+    if not page_id:
+        return
+    await _request("PATCH", f"/pages/{page_id}", {"properties": props})
+
+
+async def set_telegram(page_id: Optional[str], telegram_id: int, username: Optional[str]):
+    """Telegram ID + @username (колонка Telegram)."""
+    props = {TG_ID_COLUMN: {"rich_text": [{"text": {"content": str(telegram_id)}}]}}
+    if username:
+        props[TELEGRAM_COLUMN] = {"rich_text": [{"text": {"content": f"@{username}"}}]}
+    await _set_props(page_id, props)
+
+
+async def set_phone(page_id: Optional[str], phone: str):
+    await _set_props(page_id, {PHONE_COLUMN: {"phone_number": phone}})
+
+
+async def set_sumsub_link(page_id: Optional[str], url: str):
+    await _set_props(page_id, {SUMSUB_LINK_COLUMN: {"url": url}})
+
+
+async def set_salary_type_crypto(page_id: Optional[str]):
+    await _set_props(page_id, {SALARY_TYPE_COLUMN: {"select": {"name": SALARY_TYPE_CRYPTO}}})
+
+
+async def set_status(page_id: Optional[str], status: str):
+    await _set_props(page_id, {STATUS_COLUMN: {"status": {"name": status}}})
+
+
+async def upload_photo(page_id: Optional[str], data: bytes, filename: str = "photo.jpg"):
+    """Загружает фото в Notion (File Upload API) и кладёт в колонку Photo."""
+    if not page_id or not _enabled():
+        return
+    created = await _request(
+        "POST", "/file_uploads", {"filename": filename, "content_type": "image/jpeg"}
+    )
+    if not created:
+        return
+    upload_id = created["id"]
+    form = aiohttp.FormData()
+    form.add_field("file", data, filename=filename, content_type="image/jpeg")
+    headers = {k: v for k, v in _headers().items() if k != "Content-Type"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                f"{API}/file_uploads/{upload_id}/send", headers=headers, data=form
+            ) as resp:
+                if resp.status >= 400:
+                    log.warning("Notion photo upload → %s: %s", resp.status, await resp.text())
+                    return
+    except Exception as e:
+        log.warning("Notion photo upload failed: %s", e)
+        return
+    await _set_props(page_id, {
+        PHOTO_COLUMN: {"files": [{
+            "type": "file_upload",
+            "file_upload": {"id": upload_id},
+            "name": filename,
+        }]}
+    })

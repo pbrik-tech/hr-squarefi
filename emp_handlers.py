@@ -1,4 +1,5 @@
 import html
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
@@ -26,6 +27,7 @@ from texts import (
     TEAM_PHOTO_THANKS,
 )
 
+log = logging.getLogger("emp")
 router = Router(name="emp")
 
 
@@ -101,8 +103,10 @@ async def start_deep(message: Message, command):
         # Пишем Telegram ID в Notion
         emp_after = db.get_by_token(token)
         if emp_after.get("notion_page_id"):
-            await notion_sync.set_telegram_id(
-                emp_after["notion_page_id"], message.from_user.id
+            await notion_sync.set_telegram(
+                emp_after["notion_page_id"],
+                message.from_user.id,
+                message.from_user.username,
             )
 
     # Сразу запускаем авто-flow: интро + чек-лист + отбивка HR + запрос материалов
@@ -219,6 +223,9 @@ async def cb_toggle(cb: CallbackQuery):
         cfg.hr_id,
         f"📬 <b>{esc(emp['name'])}</b> {status}: <i>{esc(label)}</i>",
     )
+    from hr_handlers import maybe_suggest_fleet
+
+    await maybe_suggest_fleet(emp["token"])
 
 
 @router.callback_query(F.data == "emp:wallet")
@@ -247,6 +254,7 @@ async def wallet_input(message: Message, state: FSMContext):
     # Синк в Notion: адрес кошелька
     if emp.get("notion_page_id"):
         await notion_sync.set_wallet(emp["notion_page_id"], wallet)
+        await notion_sync.set_salary_type_crypto(emp["notion_page_id"])
     await runtime.hr_bot.send_message(
         cfg.hr_id,
         f"💳 <b>{esc(emp['name'])}</b> прислал адрес кошелька:\n<code>{esc(wallet)}</code>",
@@ -275,6 +283,15 @@ async def emp_photo(message: Message):
     db.log_msg(emp["token"], "emp_to_bot", "[photo]")
     db.audit(emp["token"], "employee", "photo_sent")
     db.set_check(emp["token"], "hr", "team_photo", True)
+    # Кладём фото в колонку Photo в Notion
+    if emp.get("notion_page_id"):
+        try:
+            buf = await message.bot.download(message.photo[-1].file_id)
+            await notion_sync.upload_photo(
+                emp["notion_page_id"], buf.read(), f"{emp['name']}.jpg"
+            )
+        except Exception as e:
+            log.warning("photo → Notion failed: %s", e)
     await message.answer(TEAM_PHOTO_THANKS)
 
 
