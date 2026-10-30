@@ -45,6 +45,7 @@ PHONE_COLUMN = "Phone"
 SUMSUB_LINK_COLUMN = "SumSub Link"
 PHOTO_COLUMN = "Photo"
 
+STATUS_NEW = "NEW"
 STATUS_ON_PROBATION = "On Probation"
 SALARY_TYPE_CRYPTO = "Crypto"
 
@@ -100,7 +101,7 @@ async def _request(method: str, path: str, payload: Optional[dict] = None) -> Op
 
 
 async def create_employee_row(name: str) -> Optional[str]:
-    """Создаёт строку в таблице: title=name, Status=Onboarding. Возвращает page_id."""
+    """Создаёт строку в таблице: title=name, Status=NEW. Возвращает page_id."""
     if not _enabled():
         return None
     payload = {
@@ -110,7 +111,7 @@ async def create_employee_row(name: str) -> Optional[str]:
                 "title": [{"text": {"content": name}}]
             },
             STATUS_COLUMN: {
-                "status": {"name": "Onboarding"}
+                "status": {"name": STATUS_NEW}
             },
         },
     }

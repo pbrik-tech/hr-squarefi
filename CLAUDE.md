@@ -68,7 +68,7 @@
 ## Notion
 
 Колонки базы HR / Team, в которые пишет бот — см. `EMP_NOTION_MAP`, `HR_NOTION_MAP` и константы `*_COLUMN` в `notion_sync.py`
-(SumSub, NDA, Agreement, Email access, Wallet issued, Fleet MDM, VIP, Slack/CRM/Notion access, Wallet, Telegram ID, Phone, Photo, Status = On Probation).
+(SumSub, NDA, Agreement, Email access, Wallet issued, Fleet MDM, VIP, Slack/CRM/Notion access, Wallet, Telegram ID, Phone, Photo, Status = NEW при создании, On Probation после welcome).
 Для `email_2fa`, `phone` (галочка) и `admin_access` колонок нет.
 
 ## Разработка
