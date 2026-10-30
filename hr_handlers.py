@@ -662,6 +662,22 @@ async def cb_send_single(cb: CallbackQuery, state: FSMContext):
     if field not in FLOW_BY_FIELD:
         await cb.answer("Неизвестное поле", show_alert=True)
         return
+    spec = FLOW_BY_FIELD[field]
+    if spec.get("fixed"):
+        # Готовый текст без ввода от HR (например, Slack: инвайт уже на почте)
+        sent_text = "\n".join([spec["header"], "", spec["extra"]])
+        await runtime.emp_bot.send_message(emp["telegram_id"], sent_text)
+        db.log_msg(token, "bot_to_emp", sent_text)
+        db.audit(token, "hr", "material_sent", {"field": field})
+        db.set_check(token, "hr", field, True)
+        await notion_sync.sync_hr_check(emp.get("notion_page_id"), field, True)
+        await cb.message.answer(
+            f"✅ Отправлено сотруднику <b>{esc(emp['name'])}</b>: {spec['header']}\n"
+            f"Не забудь отправить сам инвайт на рабочую почту."
+        )
+        await cb.answer("Отправлено")
+        await maybe_suggest_fleet(token)
+        return
     await ask_hr_for(token, field, state, chain=False)
     await cb.answer()
 

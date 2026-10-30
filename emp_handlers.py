@@ -16,7 +16,16 @@ import db
 import notion_sync
 from config import cfg, runtime
 from texts import (
+    EMP_CHAT_FORWARDED,
+    EMP_CHECK_SAVED,
     EMP_CHECKLIST,
+    EMP_CHECKLIST_HEADER,
+    EMP_INVITE_INVALID,
+    EMP_INVITE_USED,
+    EMP_PHOTO_BEFORE_REGISTER,
+    EMP_WALLET_ASK,
+    EMP_WALLET_SAVED,
+    SELF_REGISTER_BAD_NAME,
     EMP_KEYS,
     EMP_NOT_LINKED_HINT,
     EMP_WELCOME_AFTER_LINK,
@@ -75,9 +84,9 @@ def render_emp(emp: dict) -> str:
     checks = db.get_checks(emp["token"], "emp")
     done = sum(1 for k in EMP_KEYS if checks.get(k))
     return (
-        f"<b>Твой онбординг-чек-лист</b>\n"
-        f"Прогресс: {done}/{len(EMP_KEYS)} <code>{progress_bar(done, len(EMP_KEYS))}</code>\n\n"
-        f"Отмечай пункты, как только выполнишь. HR видит твой прогресс."
+        EMP_CHECKLIST_HEADER.format(
+            done=done, total=len(EMP_KEYS), bar=progress_bar(done, len(EMP_KEYS))
+        )
     )
 
 
@@ -91,10 +100,10 @@ async def start_deep(message: Message, command):
     token = (command.args or "").strip()
     emp = db.get_by_token(token)
     if not emp:
-        await message.answer("Ссылка-приглашение недействительна. Свяжись с HR.")
+        await message.answer(EMP_INVITE_INVALID)
         return
     if emp["telegram_id"] and emp["telegram_id"] != message.from_user.id:
-        await message.answer("Эта ссылка уже использована другим пользователем.")
+        await message.answer(EMP_INVITE_USED)
         return
     fresh_join = not emp["telegram_id"]
     if fresh_join:
@@ -140,9 +149,7 @@ async def self_register_name(message: Message, state: FSMContext):
 
     name = (message.text or "").strip()
     if len(name) < 3 or " " not in name:
-        await message.answer(
-            "Пожалуйста, напиши ФИО полностью (имя и фамилию) латиницей."
-        )
+        await message.answer(SELF_REGISTER_BAD_NAME)
         return
     # На случай гонки — проверяем, не создан ли уже
     existing = db.get_by_tg(message.from_user.id)
@@ -216,7 +223,7 @@ async def cb_toggle(cb: CallbackQuery):
         "field": key, "value": bool(data.get(key))
     })
     await cb.message.edit_reply_markup(reply_markup=emp_checklist_kb(emp["token"]))
-    await cb.answer("Сохранено")
+    await cb.answer(EMP_CHECK_SAVED)
     # Синк в Notion
     await notion_sync.sync_emp_check(emp.get("notion_page_id"), key, bool(data.get(key)))
     await runtime.hr_bot.send_message(
@@ -235,7 +242,7 @@ async def cb_wallet(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     await state.set_state(WalletInput.waiting)
-    await cb.message.answer("Пришли адрес кошелька USDT (TRC20) — я передам HR.")
+    await cb.message.answer(EMP_WALLET_ASK)
     await cb.answer()
 
 
@@ -250,7 +257,7 @@ async def wallet_input(message: Message, state: FSMContext):
     db.audit(emp["token"], "employee", "wallet_submitted", {"wallet": wallet})
     db.log_msg(emp["token"], "emp_to_bot", f"[wallet] {wallet}")
     await state.clear()
-    await message.answer("✅ Спасибо! Адрес сохранён и передан HR.")
+    await message.answer(EMP_WALLET_SAVED)
     # Синк в Notion: адрес кошелька
     if emp.get("notion_page_id"):
         await notion_sync.set_wallet(emp["notion_page_id"], wallet)
@@ -266,9 +273,7 @@ async def emp_photo(message: Message):
     """Сотрудник прислал фото — пересылаем HR и отмечаем team_photo ✅."""
     emp = db.get_by_tg(message.from_user.id)
     if not emp:
-        await message.answer(
-            "Спасибо за фото! Сначала заверши регистрацию — напиши ФИО на английском."
-        )
+        await message.answer(EMP_PHOTO_BEFORE_REGISTER)
         return
     # Пересылаем фото HR с подписью
     await runtime.hr_bot.send_photo(
@@ -320,9 +325,7 @@ async def fallback(message: Message, state: FSMContext):
             await runtime.hr_bot.send_message(cfg.hr_id, payload, reply_markup=kb)
             db.log_msg(emp["token"], "emp_to_bot", text)
             db.audit(emp["token"], "employee", "chat_message", {"text": text[:200]})
-            await message.answer(
-                "✅ Сообщение передано HR — отвечу как только смогу."
-            )
+            await message.answer(EMP_CHAT_FORWARDED)
         else:
             await message.answer(
                 render_emp(emp), reply_markup=emp_checklist_kb(emp["token"])

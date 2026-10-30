@@ -104,3 +104,12 @@ def test_fleet_gating(tmp_path, monkeypatch):
     for k in ("email", "slack_access", "notion_access"):
         dbm.set_check(token, "hr", k, True)
     assert fleet_missing(token) == []
+
+
+def test_render_card_all_steps(tmp_db):
+    import hr_handlers
+
+    token = tmp_db.create_employee("Card Test")
+    for step in ("new", "pending_approval", "joined", "verify", "wallet", "flow_done", "weird"):
+        tmp_db.set_step(token, step)
+        assert "Card Test" in hr_handlers.render_emp_card(tmp_db.get_by_token(token))

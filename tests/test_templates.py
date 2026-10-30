@@ -65,3 +65,9 @@ def test_emp_checklist_has_8_items():
 def test_hr_roadmap_has_offer_first():
     # По ТЗ шаг 1 — оффер
     assert HR_ROADMAP[0][0] == "offer"
+
+
+def test_slack_is_fixed_text():
+    spec = FLOW_BY_FIELD["slack_access"]
+    assert spec.get("fixed") is True
+    assert "почту" in spec["extra"]
