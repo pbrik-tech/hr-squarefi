@@ -13,7 +13,7 @@ HR_ROADMAP = [
     ("notion_access", "Передать доступ в Notion"),
     ("admin_access", "Передать доступ в Админ-панель"),
     ("team_chats", "Добавить в командные чаты"),
-    ("intro_slack", "Представить в #all-squarefi"),
+    ("intro_slack", "Представить в #general"),
     ("daily_call", "Поставить ежедневный звонок для онбординга в продукт"),
     ("notion_team", "Внести данные в Notion → Team"),
     ("birthday", "Добавить ДР в Google Calendar"),
@@ -302,9 +302,9 @@ HR_CHAT_FROM_EMP_HEADER = (
     "💬 <b>Сообщение от {name}</b> (<code>{tg_id}</code>):\n\n{text}"
 )
 
-# Шаблон-черновик для поста в #all-squarefi (шаг 7)
+# Шаблон-черновик для поста в #general
 SLACK_PRESENTATION_DRAFT = (
-    "📢 <b>Черновик поста в #all-squarefi</b> — скопируй и вставь в Slack:\n\n"
+    "📢 <b>Черновик поста в #general</b> — скопируй и вставь в Slack:\n\n"
     "<code>Всем привет 👋 К нам в команду присоединился(ась) {name}! "
     "Добро пожаловать в SquareFi 🚀 "
     "Поддержим коллегу и поможем быстрее влиться в ритм 💪</code>"

@@ -160,92 +160,88 @@ def list_kb(employees: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# Шаги дорожной карты, которые бот отправляет сам: кнопка шага сразу запускает отправку.
+# Остальные шаги HR делает вне бота — для них кнопка просто ставит/снимает галочку.
+ROADMAP_ACTIONS = {
+    "offer": "hr:offer:{t}",
+    "intro": "hr:resend:{t}:intro",
+    "checklist": "hr:resend:{t}:checklist",
+    "verify": "hr:send:{t}:verify",
+    "email": "hr:send:{t}:email",
+    "phone": "hr:send:{t}:phone",
+    "nda": "hr:send:{t}:nda",
+    "wallet": "hr:send:{t}:wallet",
+    "slack_access": "hr:send:{t}:slack_access",
+    "crm_access": "hr:send:{t}:crm_access",
+    "notion_access": "hr:send:{t}:notion_access",
+    "admin_access": "hr:send:{t}:admin_access",
+    "welcome": "hr:welcome:{t}",
+    "team_photo": "hr:askphoto:{t}",
+    "fleet": "hr:fleet:{t}",
+}
+
+
 def emp_card_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
     hr_checks = db.get_checks(token, "hr")
     emp_checks = db.get_checks(token, "emp")
     linked = bool(emp.get("telegram_id"))
     rows = []
 
-    # --- Чек-лист сотрудника (HR может принудительно закрыть пункты) ---
-    if linked:
-        for key, label in EMP_CHECKLIST:
-            mark = "✅" if emp_checks.get(key) else "⬜"
-            short = label if len(label) < 38 else label[:35] + "…"
-            rows.append(
-                [InlineKeyboardButton(
-                    text=f"👤 {mark} {short}",
-                    callback_data=f"hr:te:{token}:{key}",
-                )]
-            )
-
-    # --- Чек-лист дорожной карты HR ---
+    # --- Дорожная карта HR: одна кнопка на шаг ---
     for key, label in HR_ROADMAP:
         mark = "✅" if hr_checks.get(key) else "⬜"
         short = label if len(label) < 45 else label[:42] + "…"
-        rows.append(
-            [InlineKeyboardButton(text=f"{mark} {short}", callback_data=f"hr:t:{token}:{key}")]
-        )
-
-    # Кнопки повторной отправки интро и чек-листа (уже отправлялись автоматически)
-    if linked:
-        rows.append([
-            InlineKeyboardButton(text="📄 Направить оффер", callback_data=f"hr:offer:{token}"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="📩 Повторить интро", callback_data=f"hr:resend:{token}:intro"),
-            InlineKeyboardButton(text="📋 Повторить чек-лист", callback_data=f"hr:resend:{token}:checklist"),
-        ])
-
-        # Ручная отправка материалов (каждая — запрос одного поля у HR)
-        rows.append([
-            InlineKeyboardButton(text="🔗 Отправить верификацию", callback_data=f"hr:send:{token}:verify"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="✉️ Отправить доступ к почте", callback_data=f"hr:send:{token}:email"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="📱 Отправить номер телефона", callback_data=f"hr:send:{token}:phone"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="📝 Отправить NDA", callback_data=f"hr:send:{token}:nda"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="💳 Отправить инвайт в кошелёк", callback_data=f"hr:send:{token}:wallet"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="💬 Отправить Slack", callback_data=f"hr:send:{token}:slack_access"),
-            InlineKeyboardButton(text="🗂 Отправить CRM", callback_data=f"hr:send:{token}:crm_access"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text="📝 Отправить Notion", callback_data=f"hr:send:{token}:notion_access"),
-            InlineKeyboardButton(text="⚙️ Отправить Админку", callback_data=f"hr:send:{token}:admin_access"),
-        ])
-
-        # Авто-цепочка: продолжить последовательную передачу, если ещё не завершена
-        if emp["flow_step"] not in (None, "flow_done"):
-            rows.append([
-                InlineKeyboardButton(
-                    text="▶️ Продолжить авто-цепочку",
-                    callback_data=f"hr:flow:{token}",
-                )
-            ])
+        action = ROADMAP_ACTIONS.get(key) if linked else None
+        callback = action.format(t=token) if action else f"hr:t:{token}:{key}"
+        rows.append([InlineKeyboardButton(text=f"{mark} {short}", callback_data=callback)])
 
     if linked:
+        emp_done = sum(1 for k in EMP_KEYS if emp_checks.get(k))
         rows.append([
-            InlineKeyboardButton(text="🎉 Отправить welcome", callback_data=f"hr:welcome:{token}"),
-            InlineKeyboardButton(text="📷 Запросить фото", callback_data=f"hr:askphoto:{token}"),
+            InlineKeyboardButton(
+                text=f"👤 Чек-лист сотрудника {emp_done}/{len(EMP_KEYS)}",
+                callback_data=f"hr:empcl:{token}",
+            ),
+            InlineKeyboardButton(text="⋯ Ещё", callback_data=f"hr:more:{token}"),
         ])
-        rows.append([
-            InlineKeyboardButton(text="🛡 Отправить Fleet (последний шаг)", callback_data=f"hr:fleet:{token}"),
-        ])
-    rows.append([
-        InlineKeyboardButton(text="📋 Черновик для #all-squarefi", callback_data=f"hr:slackdraft:{token}"),
-        InlineKeyboardButton(text="📜 Журнал действий", callback_data=f"hr:log:{token}"),
-    ])
+    else:
+        rows.append([InlineKeyboardButton(text="⋯ Ещё", callback_data=f"hr:more:{token}")])
     rows.append([
         InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hr:emp:{token}"),
         InlineKeyboardButton(text="⬅️ К списку", callback_data="hr:list"),
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def emp_checklist_hr_kb(token: str) -> InlineKeyboardMarkup:
+    """Подменю: чек-лист сотрудника, HR может закрыть пункт за него."""
+    emp_checks = db.get_checks(token, "emp")
+    rows = []
+    for key, label in EMP_CHECKLIST:
+        mark = "✅" if emp_checks.get(key) else "⬜"
+        short = label if len(label) < 38 else label[:35] + "…"
+        rows.append(
+            [InlineKeyboardButton(text=f"{mark} {short}", callback_data=f"hr:te:{token}:{key}")]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"hr:emp:{token}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def emp_more_kb(token: str, emp: dict) -> InlineKeyboardMarkup:
+    """Подменю «Ещё»: редкие действия."""
+    rows = []
+    # Авто-цепочка: продолжить последовательную передачу, если ещё не завершена
+    if emp.get("telegram_id") and emp["flow_step"] not in (None, "flow_done"):
+        rows.append([
+            InlineKeyboardButton(text="▶️ Продолжить авто-цепочку", callback_data=f"hr:flow:{token}"),
+        ])
+    rows.append([
+        InlineKeyboardButton(text="📋 Черновик для #general", callback_data=f"hr:slackdraft:{token}"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="📜 Журнал действий", callback_data=f"hr:log:{token}"),
+    ])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"hr:emp:{token}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -289,8 +285,7 @@ def render_emp_card(emp: dict) -> str:
         f"Ссылка-приглашение: <code>{esc(invite_link)}</code>\n\n"
         f"<b>Прогресс HR:</b> {hr_done}/{len(HR_KEYS)} <code>{progress_bar(hr_done, len(HR_KEYS))}</code>\n"
         f"<b>Прогресс сотрудника:</b> {emp_done}/{len(EMP_KEYS)} <code>{progress_bar(emp_done, len(EMP_KEYS))}</code>\n\n"
-        f"<i>👤 = чек-лист сотрудника (можно закрыть принудительно). "
-        f"Без значка = твоя дорожная карта.</i>"
+        f"<i>Нажми на шаг, чтобы отправить его сотруднику или отметить выполненным.</i>"
     )
 
 
@@ -614,6 +609,31 @@ async def cb_toggle(cb: CallbackQuery):
     await maybe_suggest_fleet(token)
 
 
+@router.callback_query(F.data.startswith("hr:empcl:"))
+async def cb_emp_checklist(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    if not db.get_by_token(token):
+        await cb.answer("Сотрудник не найден", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=emp_checklist_hr_kb(token))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("hr:more:"))
+async def cb_more(cb: CallbackQuery):
+    if not is_hr(cb.from_user.id):
+        return
+    token = cb.data.split(":", 2)[2]
+    emp = db.get_by_token(token)
+    if not emp:
+        await cb.answer("Сотрудник не найден", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=emp_more_kb(token, emp))
+    await cb.answer()
+
+
 @router.callback_query(F.data.startswith("hr:te:"))
 async def cb_toggle_emp(cb: CallbackQuery):
     """HR принудительно отмечает пункт чек-листа сотрудника."""
@@ -629,7 +649,7 @@ async def cb_toggle_emp(cb: CallbackQuery):
     db.audit(token, "hr", "force_emp_toggle", {"field": key, "value": new_val})
     # Синк в Notion (та же мапа, что и для самостоятельных отметок сотрудника)
     await notion_sync.sync_emp_check(emp.get("notion_page_id"), key, new_val)
-    await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_card_kb(token, emp))
+    await cb.message.edit_text(render_emp_card(emp), reply_markup=emp_checklist_hr_kb(token))
     await cb.answer(f"{'Закрыто' if new_val else 'Открыто'}")
     await maybe_suggest_fleet(token)
 

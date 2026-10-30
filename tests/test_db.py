@@ -113,3 +113,21 @@ def test_render_card_all_steps(tmp_db):
     for step in ("new", "pending_approval", "joined", "verify", "wallet", "flow_done", "weird"):
         tmp_db.set_step(token, step)
         assert "Card Test" in hr_handlers.render_emp_card(tmp_db.get_by_token(token))
+
+
+def test_card_one_button_per_step(tmp_db):
+    import hr_handlers
+    from texts import HR_KEYS, HR_ROADMAP
+
+    assert set(hr_handlers.ROADMAP_ACTIONS) <= HR_KEYS
+    token = tmp_db.create_employee("Kb Test")
+    tmp_db.link_employee(token, 42)
+    emp = tmp_db.get_by_token(token)
+    rows = hr_handlers.emp_card_kb(token, emp).inline_keyboard
+    # шаги + строка подменю + строка навигации
+    assert len(rows) == len(HR_ROADMAP) + 2
+    callbacks = [b.callback_data for row in rows for b in row]
+    assert f"hr:send:{token}:nda" in callbacks
+    assert f"hr:t:{token}:tariff" in callbacks
+    assert f"hr:empcl:{token}" in callbacks
+    assert f"hr:more:{token}" in callbacks
